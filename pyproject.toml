@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eismaster"
+version = "0.1.0"
+description = "Desktop GUI for CHI660F EIS and operando EIS parsing, fitting, and TXT exports."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0",
+  "pandas>=2.2",
+  "scipy>=1.13",
+  "PySide6>=6.7",
+  "PySide6-Fluent-Widgets>=1.11",
+  "pyqtgraph>=0.13",
+]
+
+[project.optional-dependencies]
+advanced = [
+  "pyimpspec>=5.1",
+]
+
+[project.scripts]
+eismaster = "eismaster.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

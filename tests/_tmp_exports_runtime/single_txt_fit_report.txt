@@ -1,0 +1,42 @@
+section	key	value
+meta	generated	2026-04-03 20:54:50
+meta	file	Ag_EIS_OCV.txt
+meta	technique	A.C. Impedance
+meta	instrument	CHI660F
+fit	model	单半圆: 全局 R(QRWo)
+fit	status	warn
+fit	message	mode=single; split@17.58 Hz; init=R(QR)+RWo; global=R(QRWo); weight=calc-proportional; uncertain parameters: ill_conditioned
+quality	issue_1	总体状态: warn
+quality	issue_2	高级质控: not_run - 默认未运行。仅在需要复核数据一致性时启用。
+quality	issue_3	[warning] 检测到 3 个疑似离群点，建议复核。
+parameter	Rs	5.51677809602987
+parameter	CPE_T	1.7046987426305115e-05
+parameter	CPE_P	0.7925025109831307
+parameter	Rct	75.97696613461657
+parameter	Rct_global	69.43042053215449
+parameter	Wo_R	24.3649960075226
+parameter	Wo_T	0.08283030629800683
+parameter	Wo_P	0.4615263779927246
+parameter	split_freq_hz	17.58
+parameter	split_index	45.0
+parameter	Rs_arc	5.250400934994979
+stat	rss	1.433652115257852
+stat	chi2_reduced	0.008795411750048172
+stat	aic	-797.8474646981037
+stat	bic	-775.8968756387519
+stat	pseudo_chi2	0.008795411750048172
+stat	n_obs	170.0
+stat	dof	163.0
+stat	method	least_squares
+stat	segment_arc_pseudo_chi2	0.2037952517034534
+stat	segment_tail_pseudo_chi2	0.12897636426390388
+stat	weight	calc-proportional
+stat	Rs_arc_stderr_pct	2.683462828520856
+stat	Rct_stderr_pct	1.6446726481040945
+stat	jtj_cond	118164346744829.77
+stat	Rs_stderr_pct	3.6987147648934253
+stat	CPE_T_stderr_pct	10.720227705462298
+stat	CPE_P_stderr_pct	1.3505395937743854
+stat	Wo_R_stderr_pct	12.514969640019281
+stat	Wo_T_stderr_pct	14.205481090541763
+stat	Wo_P_stderr_pct	0.43190101221814187
