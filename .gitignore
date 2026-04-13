@@ -14,3 +14,4 @@ venv/
 *.log
 *.tmp
 *.bak
+tests/_tmp*/
