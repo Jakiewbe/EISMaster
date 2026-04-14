@@ -12,6 +12,7 @@ from eismaster.analysis.fitting import (
     _cnls_diagnostics,
     _cnls_selection_score,
     _estimate_cpe_n,
+    _zview_warburg_open,
     _zview_residual,
 )
 from eismaster.analysis.segmentation import SegmentDetection
@@ -42,6 +43,23 @@ class FittingAlgorithmTests(unittest.TestCase):
         n_est = _estimate_cpe_n(freq, z_imag_neg)
         self.assertGreaterEqual(n_est, 0.4)
         self.assertLessEqual(n_est, 1.0)
+
+    def test_calc_modulus_zview_uses_model_magnitude(self) -> None:
+        freq = np.array([1.0, 10.0])
+        z_exp = np.array([1.0 + 0.0j, 4.0 + 0.0j])
+        params = np.array([0.0])
+
+        def model_fn(_freq: np.ndarray, _params: np.ndarray) -> np.ndarray:
+            return np.array([2.0 + 0.0j, 2.0 + 0.0j])
+
+        residual = _zview_residual(freq, z_exp, params, model_fn, "calc-modulus-zview")
+        np.testing.assert_allclose(residual, np.array([0.5, -1.0, 0.0, 0.0]))
+
+    def test_zview_warburg_open_remains_finite_near_zero(self) -> None:
+        omega = np.array([1e-15, 1e-9, 1.0, 1e9], dtype=float)
+        z = _zview_warburg_open(omega, wo_r=10.0, wo_t=1.0, wo_p=0.5)
+        self.assertTrue(np.all(np.isfinite(z.real)))
+        self.assertTrue(np.all(np.isfinite(z.imag)))
 
     def test_cnls_selection_score_penalizes_systematic_runs(self) -> None:
         jac = np.eye(8)

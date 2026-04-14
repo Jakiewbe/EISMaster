@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from eismaster.analysis.preprocessing import detect_outliers_common
 from eismaster.models import QualityIssue, QualityReport, SpectrumData
 
 
@@ -75,44 +76,12 @@ def _run_kramers_kronig_check(spectrum: SpectrumData, issues: list[QualityIssue]
 
 
 def _detect_outliers(spectrum: SpectrumData) -> np.ndarray:
-    x = spectrum.z_real_ohm.astype(float)
-    y = spectrum.minus_z_imag_ohm.astype(float)
-    flags = np.zeros_like(y, dtype=bool)
-    if y.size < 5:
-        return flags
-
-    distances = np.zeros_like(y)
-    angle_change = np.zeros_like(y)
-
-    for i in range(1, y.size - 1):
-        prev_point = np.array([x[i - 1], y[i - 1]], dtype=float)
-        point = np.array([x[i], y[i]], dtype=float)
-        next_point = np.array([x[i + 1], y[i + 1]], dtype=float)
-
-        chord = next_point - prev_point
-        chord_norm = float(np.linalg.norm(chord))
-        if chord_norm <= 1e-12:
-            continue
-
-        # Point-to-chord distance; smooth tails stay small, isolated spikes jump.
-        distances[i] = abs(chord[0] * (point - prev_point)[1] - chord[1] * (point - prev_point)[0]) / chord_norm
-
-        v1 = point - prev_point
-        v2 = next_point - point
-        n1 = float(np.linalg.norm(v1))
-        n2 = float(np.linalg.norm(v2))
-        if n1 <= 1e-12 or n2 <= 1e-12:
-            continue
-        cos_theta = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
-        angle_change[i] = float(np.arccos(cos_theta))
-
-    core_distances = distances[1:-1]
-    median = float(np.median(core_distances))
-    mad = float(np.median(np.abs(core_distances - median)))
-    distance_threshold = median + 6.0 * max(mad, 1e-12)
-
-    for i in range(1, y.size - 1):
-        if distances[i] > distance_threshold and angle_change[i] > 1.0:
-            flags[i] = True
-
-    return flags
+    mask = np.ones(spectrum.n_points, dtype=bool)
+    return detect_outliers_common(
+        spectrum,
+        mask,
+        curvature_scale=6.0,
+        slope_scale=6.0,
+        gradient_scale=7.0,
+        vote_threshold=2,
+    )

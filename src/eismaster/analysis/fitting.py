@@ -35,17 +35,36 @@ class GuessPack:
     upper: np.ndarray
 
 
-PYIMPSPEC_CDC = {
-    "l_rs_rct_cpe_w": "LR(QR)W",
-    "l_rs_rsei_cpe_rct_cpe_w": "LR(QR)(QR)W",
-    "l_rs_r1_cpe_r2_cpe": "LR(QR)(QR)",
-    "rs_cpe_rct_w_series": "R(Q(RW))",
-}
+@dataclass(frozen=True)
+class FitConfig:
+    primary_error_warn_pct: float = 20.0
+    corr_warn_threshold: float = 0.90
+    corr_error_threshold: float = 0.95
+    pyimpspec_max_nfev: int = 4000
+    zview_direct_max_nfev: int = 40000
+    zview_single_fast_max_nfev: int = 12000
+    zview_single_full_max_nfev: int = 8000
+    zview_single_retry_max_nfev: int = 15000
+    zview_double_fast_max_nfev: int = 10000
+    zview_double_full_max_nfev: int = 10000
+    zview_double_retry_max_nfev: int = 15000
+    pyimpspec_good_score: float = -1.2
+    pyimpspec_factor_probe_count: int = 3
+
+
+FIT_CONFIG = FitConfig()
+
+
+@dataclass(frozen=True)
+class DrtGuide:
+    rs: float
+    peaks: tuple[dict[str, float], ...]
+
 
 FIT_METHODS = ("least_squares", "lbfgsb", "powell")
 FIT_WEIGHTS = ("boukamp", "proportional", "modulus")
 SEED_FACTORS = (1.0, 0.55, 1.8, 0.3, 3.0, 0.1, 5.0)
-ZVIEW_CNLS_WEIGHTS = ("calc-modulus", "calc-proportional", "calc-unit", "data-special")
+ZVIEW_CNLS_WEIGHTS = ("calc-modulus", "calc-proportional", "calc-unit", "data-special", "calc-modulus-zview")
 
 
 def _adaptive_weight_floor(z_exp: np.ndarray) -> float:
@@ -60,9 +79,15 @@ def _estimate_cpe_n(freq: np.ndarray, z_imag_neg: np.ndarray) -> float:
         return 0.85
     log_f = np.log10(freq[keep].astype(float))
     log_z = np.log10(z_imag_neg[keep].astype(float))
-    window = max(min(log_f.size // 2, 8), 4)
+    peak = int(np.argmax(z_imag_neg[keep]))
+    half_window = max(min(log_f.size // 5, 6), 2)
+    start = max(0, peak - half_window)
+    stop = min(log_f.size, peak + half_window + 1)
+    if stop - start < 4:
+        start = max(0, min(peak, log_f.size - 4))
+        stop = min(log_f.size, start + 4)
     try:
-        slope, _ = np.polyfit(log_f[:window], log_z[:window], 1)
+        slope, _ = np.polyfit(log_f[start:stop], log_z[start:stop], 1)
     except Exception:
         return 0.85
     return float(np.clip(abs(slope), 0.4, 1.0))
@@ -71,14 +96,15 @@ def _estimate_cpe_n(freq: np.ndarray, z_imag_neg: np.ndarray) -> float:
 def _local_noise_estimate(z_exp: np.ndarray) -> np.ndarray:
     if z_exp.size < 5:
         return np.full(z_exp.size, _adaptive_weight_floor(z_exp), dtype=float)
-    real = z_exp.real.astype(float)
-    imag = z_exp.imag.astype(float)
-    sigma = np.zeros(z_exp.size, dtype=float)
-    for idx in range(z_exp.size):
-        lo = max(0, idx - 2)
-        hi = min(z_exp.size, idx + 3)
-        local = np.hypot(real[lo:hi] - np.median(real[lo:hi]), imag[lo:hi] - np.median(imag[lo:hi]))
-        sigma[idx] = max(1.4826 * float(np.median(np.abs(local - np.median(local)))), 0.0)
+    real = np.pad(z_exp.real.astype(float), (2, 2), mode="edge")
+    imag = np.pad(z_exp.imag.astype(float), (2, 2), mode="edge")
+    real_win = np.lib.stride_tricks.sliding_window_view(real, 5)
+    imag_win = np.lib.stride_tricks.sliding_window_view(imag, 5)
+    real_med = np.median(real_win, axis=1)
+    imag_med = np.median(imag_win, axis=1)
+    local = np.hypot(real_win - real_med[:, None], imag_win - imag_med[:, None])
+    local_med = np.median(local, axis=1)
+    sigma = 1.4826 * np.median(np.abs(local - local_med[:, None]), axis=1)
     return np.maximum(sigma, _adaptive_weight_floor(z_exp))
 
 
@@ -147,6 +173,7 @@ def fit_spectrum(
     auto_preprocess: bool = False,
     use_drt_guided_guess: bool = True,
     batch_fast: bool = False,
+    drt_guide: Optional[DrtGuide] = None,
 ) -> FitOutcome:
     template = TEMPLATES[template_key]
     freq = spectrum.freq_hz
@@ -186,6 +213,7 @@ def fit_spectrum(
             warm_start=warm_start,
             use_drt_guided_guess=use_drt_guided_guess,
             batch_fast=batch_fast,
+            drt_guide=drt_guide,
         )
         result = replace(result, preprocess_actions=pp_actions)
         return _attach_diagnosis(result, spectrum, template_key, segment_hint)
@@ -197,6 +225,7 @@ def fit_spectrum(
             warm_start=warm_start,
             use_drt_guided_guess=use_drt_guided_guess,
             batch_fast=batch_fast,
+            drt_guide=drt_guide,
         )
         result = replace(result, preprocess_actions=pp_actions)
         return _attach_diagnosis(result, spectrum, template_key, segment_hint)
@@ -217,17 +246,26 @@ def fit_spectrum(
         path=str(spectrum.metadata.file_path),
         label=spectrum.display_name,
     )
-    guesses = _build_initial_guesses(template, spectrum, point_mask, warm_start=warm_start, use_drt_guided_guess=use_drt_guided_guess)
+    guesses = _build_initial_guesses(
+        template,
+        spectrum,
+        point_mask,
+        warm_start=warm_start,
+        use_drt_guided_guess=use_drt_guided_guess,
+        drt_guide=drt_guide,
+    )
 
     best_fit = None
     best_score = float("inf")
     best_meta: tuple[str, str] | None = None
     last_error = None
     for guess in guesses:
+        guess_best = float("inf")
+        success_count = 0
         seed_factors = SEED_FACTORS[:3] if batch_fast else SEED_FACTORS
         methods = ("least_squares",) if batch_fast else FIT_METHODS
         weights = ("modulus", "boukamp") if batch_fast else FIT_WEIGHTS
-        for factor in seed_factors:
+        for factor_index, factor in enumerate(seed_factors, start=1):
             for method in methods:
                 for weight in weights:
                     try:
@@ -237,16 +275,26 @@ def fit_spectrum(
                             data,
                             method=method,
                             weight=weight,
-                            max_nfev=4000,
+                            max_nfev=FIT_CONFIG.pyimpspec_max_nfev,
                         )
                     except Exception as exc:
                         last_error = exc
                         continue
                     score = _fit_score(result)
+                    success_count += 1
+                    guess_best = min(guess_best, score)
                     if score < best_score:
                         best_fit = result
                         best_score = score
                         best_meta = (method, weight)
+                    if guess_best < FIT_CONFIG.pyimpspec_good_score:
+                        break
+                if guess_best < FIT_CONFIG.pyimpspec_good_score:
+                    break
+            if guess_best < FIT_CONFIG.pyimpspec_good_score:
+                break
+            if not batch_fast and factor_index >= FIT_CONFIG.pyimpspec_factor_probe_count and success_count > 0 and guess_best < -0.5:
+                break
 
     if best_fit is None:
         outcome = FitOutcome(
@@ -299,6 +347,7 @@ def _build_initial_guesses(
     *,
     warm_start: Optional[FitOutcome] = None,
     use_drt_guided_guess: bool = True,
+    drt_guide: Optional[DrtGuide] = None,
 ) -> list[GuessPack]:
     """Return one or more initial-guess packs.  The geometric strategy is
     appended when it succeeds; callers loop over all packs."""
@@ -311,7 +360,7 @@ def _build_initial_guesses(
     if geo is not None:
         packs.append(geo)
     if use_drt_guided_guess:
-        drt_pack = _build_initial_guess_drt(template, spectrum, point_mask)
+        drt_pack = _build_initial_guess_drt(template, spectrum, point_mask, drt_guide=drt_guide)
         if drt_pack is not None:
             packs.append(drt_pack)
     return packs
@@ -330,46 +379,6 @@ def _build_initial_guess(template: CircuitTemplate, spectrum: SpectrumData, poin
     q_main = max(1.0 / (max(span, 1e-6) * (2.0 * math.pi * max(main_peak_freq, 1e-6)) ** n_default), 1e-9)
     sigma = max(float(abs(spectrum.z_imag_ohm[-1]) / math.sqrt(2.0 * math.pi * max(spectrum.freq_hz[-1], 1e-9))), 1e-6)
 
-    if template.key == "l_rs_rct_cpe_w":
-        return GuessPack(
-            x0=np.asarray([l_h, rs, span, q_main, n_default, sigma], dtype=float),
-            lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-12], dtype=float),
-            upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9], dtype=float),
-        )
-
-    if template.key == "l_rs_rsei_cpe_rct_cpe_w":
-        peaks = _peak_frequencies(freq, y, 2)
-        high_peak, low_peak = peaks[0], peaks[-1]
-        r_sei = max(span * 0.3, 1e-3)
-        r_ct = max(span * 0.7, 1e-3)
-        q_sei = max(1.0 / (r_sei * (2.0 * math.pi * high_peak) ** n_default), 1e-9)
-        q_dl = max(1.0 / (r_ct * (2.0 * math.pi * low_peak) ** n_default), 1e-9)
-        return GuessPack(
-            x0=np.asarray([l_h, rs, r_sei, q_sei, n_default, r_ct, q_dl, n_default, sigma], dtype=float),
-            lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-9, 1e-12, 0.3, 1e-12], dtype=float),
-            upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9, 1e3, 1.0, 1e9], dtype=float),
-        )
-
-    if template.key == "l_rs_r1_cpe_r2_cpe":
-        peaks = _peak_frequencies(freq, y, 2)
-        high_peak, low_peak = peaks[0], peaks[-1]
-        r1 = max(span * 0.45, 1e-3)
-        r2 = max(span * 0.55, 1e-3)
-        q1 = max(1.0 / (r1 * (2.0 * math.pi * high_peak) ** n_default), 1e-9)
-        q2 = max(1.0 / (r2 * (2.0 * math.pi * low_peak) ** n_default), 1e-9)
-        return GuessPack(
-            x0=np.asarray([l_h, rs, r1, q1, n_default, r2, q2, n_default], dtype=float),
-            lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-9, 1e-12, 0.3], dtype=float),
-            upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9, 1e3, 1.0], dtype=float),
-        )
-
-    if template.key == "rs_cpe_rct_w_series":
-        return GuessPack(
-            x0=np.asarray([rs, q_main, n_default, max(span, 1e-3), sigma], dtype=float),
-            lower=np.asarray([1e-9, 1e-12, 0.3, 1e-9, 1e-12], dtype=float),
-            upper=np.asarray([1e7, 1e3, 1.0, 1e9, 1e9], dtype=float),
-        )
-
     raise KeyError(template.key)
 
 
@@ -377,16 +386,14 @@ def _build_initial_guess_drt(
     template: CircuitTemplate,
     spectrum: SpectrumData,
     point_mask: np.ndarray,
+    drt_guide: Optional[DrtGuide] = None,
 ) -> Optional[GuessPack]:
-    try:
-        from eismaster.analysis.native_drt import compute_drt, find_drt_peaks
-
-        tau, gamma, rs_drt = compute_drt(spectrum)
-        peaks = find_drt_peaks(tau, gamma)
-    except Exception:
-        logger.debug("DRT guided initial guess failed", exc_info=True)
+    guide = drt_guide if drt_guide is not None else build_drt_guide(spectrum)
+    if guide is None:
         return None
 
+    rs_drt = guide.rs
+    peaks = guide.peaks
     if not peaks:
         return None
 
@@ -397,139 +404,25 @@ def _build_initial_guess_drt(
     peak1 = peaks[0]
     peak2 = peaks[-1]
 
-    if template.key == "l_rs_rct_cpe_w":
-        rct = max(float(peak1["R"]), 1e-3)
-        n_val = float(np.clip(peak1["n"], 0.4, 1.0))
-        peak_freq = max(1.0 / max(float(peak1["tau"]), 1e-9), 1e-6)
-        q_val = max(1.0 / (rct * (2.0 * math.pi * peak_freq) ** n_val), 1e-12)
-        sigma = max(span * 0.05, 1e-6)
-        return GuessPack(
-            x0=np.asarray([1e-7, rs, rct, q_val, n_val, sigma], dtype=float),
-            lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-12], dtype=float),
-            upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9], dtype=float),
-        )
-
-    if template.key == "l_rs_rsei_cpe_rct_cpe_w":
-        r_sei = max(float(peak1["R"]), span * 0.2, 1e-3)
-        r_ct = max(float(peak2["R"]), span * 0.5, 1e-3)
-        n1 = float(np.clip(peak1["n"], 0.4, 1.0))
-        n2 = float(np.clip(peak2["n"], 0.4, 1.0))
-        f1 = max(1.0 / max(float(peak1["tau"]), 1e-9), 1e-6)
-        f2 = max(1.0 / max(float(peak2["tau"]), 1e-9), 1e-6)
-        q1 = max(1.0 / (r_sei * (2.0 * math.pi * f1) ** n1), 1e-12)
-        q2 = max(1.0 / (r_ct * (2.0 * math.pi * f2) ** n2), 1e-12)
-        sigma = max(span * 0.05, 1e-6)
-        return GuessPack(
-            x0=np.asarray([1e-7, rs, r_sei, q1, n1, r_ct, q2, n2, sigma], dtype=float),
-            lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-9, 1e-12, 0.3, 1e-12], dtype=float),
-            upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9, 1e3, 1.0, 1e9], dtype=float),
-        )
-
-    if template.key == "l_rs_r1_cpe_r2_cpe":
-        r1 = max(float(peak1["R"]), span * 0.3, 1e-3)
-        r2 = max(float(peak2["R"]), span * 0.5, 1e-3)
-        n1 = float(np.clip(peak1["n"], 0.4, 1.0))
-        n2 = float(np.clip(peak2["n"], 0.4, 1.0))
-        f1 = max(1.0 / max(float(peak1["tau"]), 1e-9), 1e-6)
-        f2 = max(1.0 / max(float(peak2["tau"]), 1e-9), 1e-6)
-        q1 = max(1.0 / (r1 * (2.0 * math.pi * f1) ** n1), 1e-12)
-        q2 = max(1.0 / (r2 * (2.0 * math.pi * f2) ** n2), 1e-12)
-        return GuessPack(
-            x0=np.asarray([1e-7, rs, r1, q1, n1, r2, q2, n2], dtype=float),
-            lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-9, 1e-12, 0.3], dtype=float),
-            upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9, 1e3, 1.0], dtype=float),
-        )
-
-    if template.key == "rs_cpe_rct_w_series":
-        rct = max(float(peak1["R"]), span * 0.5, 1e-3)
-        n_val = float(np.clip(peak1["n"], 0.4, 1.0))
-        peak_freq = max(1.0 / max(float(peak1["tau"]), 1e-9), 1e-6)
-        q_val = max(1.0 / (rct * (2.0 * math.pi * peak_freq) ** n_val), 1e-12)
-        sigma = max(span * 0.05, 1e-6)
-        return GuessPack(
-            x0=np.asarray([rs, q_val, n_val, rct, sigma], dtype=float),
-            lower=np.asarray([1e-9, 1e-12, 0.3, 1e-9, 1e-12], dtype=float),
-            upper=np.asarray([1e7, 1e3, 1.0, 1e9, 1e9], dtype=float),
-        )
-
     return None
+
+
+def build_drt_guide(spectrum: SpectrumData) -> Optional[DrtGuide]:
+    try:
+        from eismaster.analysis.native_drt import compute_drt, find_drt_peaks
+
+        tau, gamma, rs_drt = compute_drt(spectrum)
+        peaks = find_drt_peaks(tau, gamma)
+    except Exception:
+        logger.debug("DRT guided initial guess failed", exc_info=True)
+        return None
+    normalized_peaks = tuple({str(key): float(value) for key, value in peak.items()} for peak in peaks)
+    return DrtGuide(rs=float(rs_drt), peaks=normalized_peaks)
 
 
 def _build_initial_guess_from_fit(template: CircuitTemplate, warm_start: Optional[FitOutcome]) -> Optional[GuessPack]:
     if warm_start is None or warm_start.model_key != template.key:
         return None
-    params = warm_start.parameters
-    try:
-        if template.key == "l_rs_rct_cpe_w":
-            return GuessPack(
-                x0=np.asarray(
-                    [
-                        float(params.get("L_h", 1e-7)),
-                        float(params["Rs"]),
-                        float(params["Rct"]),
-                        float(params["Qdl"]),
-                        float(params["ndl"]),
-                        float(params.get("W", 1e-6)),
-                    ],
-                    dtype=float,
-                ),
-                lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-12], dtype=float),
-                upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9], dtype=float),
-            )
-        if template.key == "l_rs_rsei_cpe_rct_cpe_w":
-            return GuessPack(
-                x0=np.asarray(
-                    [
-                        float(params.get("L_h", 1e-7)),
-                        float(params["Rs"]),
-                        float(params["Rsei"]),
-                        float(params["Qsei"]),
-                        float(params["nsei"]),
-                        float(params["Rct"]),
-                        float(params["Qdl"]),
-                        float(params["ndl"]),
-                        float(params.get("W", 1e-6)),
-                    ],
-                    dtype=float,
-                ),
-                lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-9, 1e-12, 0.3, 1e-12], dtype=float),
-                upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9, 1e3, 1.0, 1e9], dtype=float),
-            )
-        if template.key == "l_rs_r1_cpe_r2_cpe":
-            return GuessPack(
-                x0=np.asarray(
-                    [
-                        float(params.get("L_h", 1e-7)),
-                        float(params["Rs"]),
-                        float(params["R1"]),
-                        float(params["Q1"]),
-                        float(params["n1"]),
-                        float(params["R2"]),
-                        float(params["Q2"]),
-                        float(params["n2"]),
-                    ],
-                    dtype=float,
-                ),
-                lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-9, 1e-12, 0.3], dtype=float),
-                upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9, 1e3, 1.0], dtype=float),
-            )
-        if template.key == "rs_cpe_rct_w_series":
-            return GuessPack(
-                x0=np.asarray(
-                    [
-                        float(params["Rs"]),
-                        float(params["Qdl"]),
-                        float(params["ndl"]),
-                        float(params["Rct"]),
-                        float(params.get("W", 1e-6)),
-                    ],
-                    dtype=float,
-                ),
-                lower=np.asarray([1e-9, 1e-12, 0.3, 1e-9, 1e-12], dtype=float),
-                upper=np.asarray([1e7, 1e3, 1.0, 1e9, 1e9], dtype=float),
-            )
-    except Exception:
-        logger.debug("Warm-start initial guess build failed", exc_info=True)
     return None
 
 
@@ -569,36 +462,6 @@ def _build_initial_guess_geometric(
         logger.debug("Operation failed", exc_info=True)
         return None
 
-    if template.key == "l_rs_rct_cpe_w":
-        return GuessPack(
-            x0=np.asarray([l_h_geo, rs_geo, rct_geo, q_geo, n_geo, sigma_geo], dtype=float),
-            lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-12], dtype=float),
-            upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9], dtype=float),
-        )
-    if template.key == "l_rs_rsei_cpe_rct_cpe_w":
-        r_sei_geo = max(rct_geo * 0.3, 1e-3)
-        q_sei_geo = max(1.0 / (r_sei_geo * (2.0 * math.pi * peak_freq_geo * 5.0) ** n_geo), 1e-12)
-        return GuessPack(
-            x0=np.asarray([l_h_geo, rs_geo, r_sei_geo, q_sei_geo, n_geo, rct_geo, q_geo, n_geo, sigma_geo], dtype=float),
-            lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-9, 1e-12, 0.3, 1e-12], dtype=float),
-            upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9, 1e3, 1.0, 1e9], dtype=float),
-        )
-    if template.key == "l_rs_r1_cpe_r2_cpe":
-        r1_geo = max(rct_geo * 0.45, 1e-3)
-        r2_geo = max(rct_geo * 0.55, 1e-3)
-        q1_geo = max(1.0 / (r1_geo * (2.0 * math.pi * peak_freq_geo * 3.0) ** n_geo), 1e-12)
-        q2_geo = max(1.0 / (r2_geo * (2.0 * math.pi * peak_freq_geo) ** n_geo), 1e-12)
-        return GuessPack(
-            x0=np.asarray([l_h_geo, rs_geo, r1_geo, q1_geo, n_geo, r2_geo, q2_geo, n_geo], dtype=float),
-            lower=np.asarray([0.0, 1e-9, 1e-9, 1e-12, 0.3, 1e-9, 1e-12, 0.3], dtype=float),
-            upper=np.asarray([1e3, 1e7, 1e9, 1e3, 1.0, 1e9, 1e3, 1.0], dtype=float),
-        )
-    if template.key == "rs_cpe_rct_w_series":
-        return GuessPack(
-            x0=np.asarray([rs_geo, q_geo, n_geo, rct_geo, sigma_geo], dtype=float),
-            lower=np.asarray([1e-9, 1e-12, 0.3, 1e-9, 1e-12], dtype=float),
-            upper=np.asarray([1e7, 1e3, 1.0, 1e9, 1e9], dtype=float),
-        )
     return None
 
 
@@ -609,6 +472,7 @@ def _fit_zview_global(
     warm_start: Optional[FitOutcome] = None,
     use_drt_guided_guess: bool = True,
     batch_fast: bool = False,
+    drt_guide: Optional[DrtGuide] = None,
 ) -> FitOutcome:
     template = TEMPLATES["zview_segmented_rq_rwo"]
     if least_squares is None:
@@ -706,6 +570,7 @@ def _fit_zview_global(
         warm_start=warm_start,
         use_drt_guided_guess=use_drt_guided_guess,
         batch_fast=batch_fast,
+        drt_guide=drt_guide,
     )
     if global_result is None:
         direct_result = _fit_zview_global_direct(spectrum, point_mask, detection, split_index, peak_index, warm_start=warm_start)
@@ -790,6 +655,7 @@ def _fit_zview_double_global(
     warm_start: Optional[FitOutcome] = None,
     use_drt_guided_guess: bool = True,
     batch_fast: bool = False,
+    drt_guide: Optional[DrtGuide] = None,
 ) -> FitOutcome:
     template = TEMPLATES["zview_double_rq_qrwo"]
     if least_squares is None:
@@ -897,6 +763,7 @@ def _fit_zview_double_global(
         warm_start=warm_start,
         use_drt_guided_guess=use_drt_guided_guess,
         batch_fast=batch_fast,
+        drt_guide=drt_guide,
     )
     if global_result is None:
         direct_result = _fit_zview_double_global_direct(spectrum, point_mask, detection, warm_start=warm_start)
@@ -1188,116 +1055,66 @@ def _solve_zview_cnls(
     tags = weight_tags or ZVIEW_CNLS_WEIGHTS
     if seed_limit is not None:
         seeds = seeds[:seed_limit]
+
+    # Two-stage sniffing: W×S → S+W calls
+    # Stage 1: all seeds with fastest weight → find best seed
+    # Stage 2: all weights on best seed → pick best weight
+    probe_tag = tags[0]  # "calc-modulus" — fastest weight
+    best_seed = None
+    best_seed_score = float("inf")
+    for seed in seeds:
+        s = np.clip(np.asarray(seed, dtype=float), lower * 1.001, upper * 0.999)
+        try:
+            result = least_squares(
+                lambda p, t=probe_tag: _zview_residual(freq, z_exp, p, model_fn, t),
+                s,
+                bounds=(lower, upper),
+                method="trf",
+                max_nfev=max_nfev,
+                x_scale="jac",
+                ftol=1e-6,
+                xtol=1e-6,
+            )
+        except Exception:
+            continue
+        score = _cnls_selection_score(result, param_count)
+        if score < best_seed_score:
+            best_seed_score = score
+            best_seed = np.asarray(result.x, dtype=float)
+
+    if best_seed is None:
+        return None
+
+    # Stage 2: all weights on the best seed
     for weight_tag in tags:
-        for seed in seeds:
-            seed = np.clip(np.asarray(seed, dtype=float), lower * 1.001, upper * 0.999)
-            try:
-                result = least_squares(
-                    lambda params, tag=weight_tag: _zview_residual(freq, z_exp, params, model_fn, tag),
-                    seed,
-                    bounds=(lower, upper),
-                    method="trf",
-                    max_nfev=max_nfev,
-                    x_scale="jac",
-                )
-            except Exception:
-                continue
-            result.bounds = (lower, upper)  # type: ignore[attr-defined]
-            result.weight_tag = weight_tag  # type: ignore[attr-defined]
-            score = _cnls_selection_score(result, param_count)
-            if best is None or score < best_score:
-                best = result
-                best_score = score
+        s = np.clip(best_seed, lower * 1.001, upper * 0.999)
+        try:
+            result = least_squares(
+                lambda p, t=weight_tag: _zview_residual(freq, z_exp, p, model_fn, t),
+                s,
+                bounds=(lower, upper),
+                method="trf",
+                max_nfev=max_nfev,
+                x_scale="jac",
+                ftol=1e-6,
+                xtol=1e-6,
+            )
+        except Exception:
+            continue
+        result.bounds = (lower, upper)  # type: ignore[attr-defined]
+        result.weight_tag = weight_tag  # type: ignore[attr-defined]
+        score = _cnls_selection_score(result, param_count)
+        if score < best_score:
+            best = result
+            best_score = score
     return best
-
-
-def _build_pyimpspec_circuit(template_key: str, guess: GuessPack, factor: float):
-    scaled = guess.x0.copy()
-    for idx in range(scaled.size):
-        if idx not in (4, 7):
-            scaled[idx] = max(scaled[idx] * factor, guess.lower[idx] * 1.01 if guess.lower[idx] > 0 else 1e-12)
-    cdc = PYIMPSPEC_CDC[template_key]
-    circuit = parse_cdc(cdc)
-    elements = circuit.get_elements()
-
-    if template_key == "l_rs_rct_cpe_w":
-        l_h, rs, rct, q_dl, n_dl, sigma = scaled
-        elements[0].set_values(L=l_h).set_lower_limits(L=guess.lower[0]).set_upper_limits(L=guess.upper[0])
-        elements[1].set_values(R=rs).set_lower_limits(R=guess.lower[1]).set_upper_limits(R=guess.upper[1])
-        elements[2].set_values(Y=q_dl, n=n_dl).set_lower_limits(Y=guess.lower[3], n=guess.lower[4]).set_upper_limits(Y=guess.upper[3], n=guess.upper[4])
-        elements[3].set_values(R=rct).set_lower_limits(R=guess.lower[2]).set_upper_limits(R=guess.upper[2])
-        elements[4].set_values(Y=sigma, n=0.5).set_lower_limits(Y=guess.lower[5], n=0.0).set_upper_limits(Y=guess.upper[5], n=1.0).set_fixed(n=True)
-        return circuit
-
-    if template_key == "l_rs_rsei_cpe_rct_cpe_w":
-        l_h, rs, r_sei, q_sei, n_sei, r_ct, q_dl, n_dl, sigma = scaled
-        elements[0].set_values(L=l_h).set_lower_limits(L=guess.lower[0]).set_upper_limits(L=guess.upper[0])
-        elements[1].set_values(R=rs).set_lower_limits(R=guess.lower[1]).set_upper_limits(R=guess.upper[1])
-        elements[2].set_values(Y=q_sei, n=n_sei).set_lower_limits(Y=guess.lower[3], n=guess.lower[4]).set_upper_limits(Y=guess.upper[3], n=guess.upper[4])
-        elements[3].set_values(R=r_sei).set_lower_limits(R=guess.lower[2]).set_upper_limits(R=guess.upper[2])
-        elements[4].set_values(Y=q_dl, n=n_dl).set_lower_limits(Y=guess.lower[6], n=guess.lower[7]).set_upper_limits(Y=guess.upper[6], n=guess.upper[7])
-        elements[5].set_values(R=r_ct).set_lower_limits(R=guess.lower[5]).set_upper_limits(R=guess.upper[5])
-        elements[6].set_values(Y=sigma, n=0.5).set_lower_limits(Y=guess.lower[8], n=0.0).set_upper_limits(Y=guess.upper[8], n=1.0).set_fixed(n=True)
-        return circuit
-
-    if template_key == "l_rs_r1_cpe_r2_cpe":
-        l_h, rs, r1, q1, n1, r2, q2, n2 = scaled
-        elements[0].set_values(L=l_h).set_lower_limits(L=guess.lower[0]).set_upper_limits(L=guess.upper[0])
-        elements[1].set_values(R=rs).set_lower_limits(R=guess.lower[1]).set_upper_limits(R=guess.upper[1])
-        elements[2].set_values(Y=q1, n=n1).set_lower_limits(Y=guess.lower[3], n=guess.lower[4]).set_upper_limits(Y=guess.upper[3], n=guess.upper[4])
-        elements[3].set_values(R=r1).set_lower_limits(R=guess.lower[2]).set_upper_limits(R=guess.upper[2])
-        elements[4].set_values(Y=q2, n=n2).set_lower_limits(Y=guess.lower[6], n=guess.lower[7]).set_upper_limits(Y=guess.upper[6], n=guess.upper[7])
-        elements[5].set_values(R=r2).set_lower_limits(R=guess.lower[5]).set_upper_limits(R=guess.upper[5])
-        return circuit
-
-    if template_key == "rs_cpe_rct_w_series":
-        rs, q_dl, n_dl, rct, sigma = scaled
-        elements[0].set_values(R=rs).set_lower_limits(R=guess.lower[0]).set_upper_limits(R=guess.upper[0])
-        elements[1].set_values(Y=q_dl, n=n_dl).set_lower_limits(Y=guess.lower[1], n=guess.lower[2]).set_upper_limits(Y=guess.upper[1], n=guess.upper[2])
-        elements[2].set_values(R=rct).set_lower_limits(R=guess.lower[3]).set_upper_limits(R=guess.upper[3])
-        elements[3].set_values(Y=sigma, n=0.5).set_lower_limits(Y=guess.lower[4], n=0.0).set_upper_limits(Y=guess.upper[4], n=1.0).set_fixed(n=True)
-        return circuit
-
-    raise KeyError(template_key)
 
 
 def _fit_arc_region(spectrum: SpectrumData, arc_data: DataSet, split_index: int, peak_index: int, *, batch_fast: bool = False):
     base_circuit = parse_cdc("R(QR)")
     elements = base_circuit.get_elements()
-    z_real = spectrum.z_real_ohm[: split_index + 1]
-    span = max(float(np.nanmax(z_real) - np.nanmin(z_real)), 1e-3)
-    rs = max(float(np.nanmin(z_real)), 1e-6)
-    peak_freq = float(spectrum.freq_hz[peak_index])
-    n_default = _estimate_cpe_n(
-        spectrum.freq_hz[: split_index + 1].astype(float),
-        spectrum.minus_z_imag_ohm[: split_index + 1].astype(float),
-    )
-    q_main = max(1.0 / (max(span, 1e-6) * (2.0 * math.pi * max(peak_freq, 1e-6)) ** n_default), 1e-9)
-    elements[0].set_values(R=rs)
-    elements[1].set_values(Y=q_main, n=n_default)
-    elements[2].set_values(R=span)
-    best_fit = None
-    best_score = float("inf")
-    best_hits = float("inf")
-    methods = ("least_squares",) if batch_fast else ("least_squares", "lbfgsb")
-    weights = ("modulus", "boukamp") if batch_fast else ("modulus", "boukamp", "proportional")
-    for method in methods:
-        for weight in weights:
-            try:
-                circuit = parse_cdc("R(QR)")
-                circuit.get_elements()[0].set_values(R=rs)
-                circuit.get_elements()[1].set_values(Y=q_main, n=n_default)
-                circuit.get_elements()[2].set_values(R=span)
-                result = fit_circuit(circuit, arc_data, method=method, weight=weight, max_nfev=4000)
-                score = float(getattr(result, "pseudo_chisqr", float("inf")))
-                hits = float(len(_boundary_hits(result.circuit)))
-                if score < best_score or (math.isclose(score, best_score) and hits < best_hits):
-                    best_fit = result
-                    best_score = score
-                    best_hits = hits
-            except Exception:
-                logger.debug("Arc fit candidate failed", exc_info=True)
-    return best_fit
+    arc_indices = np.arange(split_index + 1, dtype=int)
+    return _fit_arc_region_on_window(spectrum, arc_data, arc_indices, peak_index, batch_fast=batch_fast)
 
 
 def _fit_arc_region_on_window(spectrum: SpectrumData, arc_data: DataSet, arc_indices: np.ndarray, peak_index: int, *, batch_fast: bool = False):
@@ -1327,7 +1144,7 @@ def _fit_arc_region_on_window(spectrum: SpectrumData, arc_data: DataSet, arc_ind
                 circuit.get_elements()[0].set_values(R=rs)
                 circuit.get_elements()[1].set_values(Y=q_main, n=n_default)
                 circuit.get_elements()[2].set_values(R=span)
-                result = fit_circuit(circuit, arc_data, method=method, weight=weight, max_nfev=4000)
+                result = fit_circuit(circuit, arc_data, method=method, weight=weight, max_nfev=FIT_CONFIG.pyimpspec_max_nfev)
                 score = float(getattr(result, "pseudo_chisqr", float("inf")))
                 hits = float(len(_boundary_hits(result.circuit)))
                 if score < best_score or (math.isclose(score, best_score) and hits < best_hits):
@@ -1347,7 +1164,7 @@ def _fit_tail_region(spectrum: SpectrumData, tail_data: DataSet, split_index: in
     elements[0].set_values(R=rs_guess)
     elements[1].set_values(Y=5e-5, B=3.0 / (2.0 * math.pi * f_ref), n=0.5).set_fixed(n=True)
     try:
-        coarse = fit_circuit(circuit, tail_data, method="least_squares", weight="modulus", max_nfev=4000)
+        coarse = fit_circuit(circuit, tail_data, method="least_squares", weight="modulus", max_nfev=FIT_CONFIG.pyimpspec_max_nfev)
     except Exception:
         logger.debug("Operation failed", exc_info=True)
         return None
@@ -1365,7 +1182,7 @@ def _fit_tail_region(spectrum: SpectrumData, tail_data: DataSet, split_index: in
                 B=max(float(refined_elements[1].get_values()["B"]) * 1e2, 1e-6),
                 n=1.0,
             )
-            fine = fit_circuit(refined, tail_data, method="least_squares", weight="modulus", max_nfev=4000)
+            fine = fit_circuit(refined, tail_data, method="least_squares", weight="modulus", max_nfev=FIT_CONFIG.pyimpspec_max_nfev)
             if float(getattr(fine, "pseudo_chisqr", float("inf"))) <= float(getattr(coarse, "pseudo_chisqr", float("inf"))):
                 return fine
         except Exception:
@@ -1391,7 +1208,7 @@ def _stderr_pct_from_dataframe(params_df, row_index: int) -> float:
     return value
 
 
-def _is_high_error(value: float, threshold: float = 20.0) -> bool:
+def _is_high_error(value: float, threshold: float = FIT_CONFIG.primary_error_warn_pct) -> bool:
     return not np.isfinite(value) or float(value) > threshold
 
 
@@ -1441,6 +1258,7 @@ def _fit_full_zview_cnls(
     warm_start: Optional[FitOutcome] = None,
     use_drt_guided_guess: bool = True,
     batch_fast: bool = False,
+    drt_guide: Optional[DrtGuide] = None,
 ):
     arc_elements = arc_fit.circuit.get_elements()
     tail_elements = tail_fit.circuit.get_elements()
@@ -1477,39 +1295,37 @@ def _fit_full_zview_cnls(
         upper,
         seeds,
         param_count=len(x0),
-        max_nfev=12000 if batch_fast else 20000,
+        max_nfev=FIT_CONFIG.zview_single_fast_max_nfev if batch_fast else FIT_CONFIG.zview_single_full_max_nfev,
         weight_tags=("calc-modulus", "calc-unit") if batch_fast else None,
         seed_limit=3 if batch_fast else None,
     )
     if result is not None or not use_drt_guided_guess:
         return result
-    try:
-        from eismaster.analysis.native_drt import compute_drt, find_drt_peaks
-        tau, gamma, rs_drt = compute_drt(spectrum)
-        peaks = find_drt_peaks(tau, gamma)
-        if len(peaks) >= 1:
-            p1 = max(peaks, key=lambda p: p["R"])
-            q1 = max(1.0 / (max(p1["R"], 1e-4) * (2 * math.pi / max(p1["tau"], 1e-6)) ** p1["n"]), 1e-12)
-            drt_x0 = x0.copy()
-            drt_x0[0] = max(rs_drt, 1e-6)
-            drt_x0[1] = q1
-            drt_x0[2] = p1["n"]
-            drt_x0[3] = max(p1["R"], 1e-4)
-            seeds = [drt_x0] + seeds[:2]
-            return _solve_zview_cnls(
-                freq,
-                z_exp,
-                _zview_full_model,
-                lower,
-                upper,
-                seeds,
-                param_count=len(x0),
-                max_nfev=18000 if batch_fast else 30000,
-                weight_tags=("calc-modulus", "calc-unit") if batch_fast else None,
-                seed_limit=2 if batch_fast else None,
-            )
-    except Exception:
-        logger.debug("DRT seed generation failed", exc_info=True)
+    guide = drt_guide if drt_guide is not None else build_drt_guide(spectrum)
+    if guide is None:
+        return result
+    peaks = guide.peaks
+    if len(peaks) >= 1:
+        p1 = max(peaks, key=lambda p: p["R"])
+        q1 = max(1.0 / (max(p1["R"], 1e-4) * (2 * math.pi / max(p1["tau"], 1e-6)) ** p1["n"]), 1e-12)
+        drt_x0 = x0.copy()
+        drt_x0[0] = max(guide.rs, 1e-6)
+        drt_x0[1] = q1
+        drt_x0[2] = p1["n"]
+        drt_x0[3] = max(p1["R"], 1e-4)
+        seeds = [drt_x0] + seeds[:2]
+        return _solve_zview_cnls(
+            freq,
+            z_exp,
+            _zview_full_model,
+            lower,
+            upper,
+            seeds,
+            param_count=len(x0),
+            max_nfev=18000 if batch_fast else FIT_CONFIG.zview_single_retry_max_nfev,
+            weight_tags=("calc-modulus", "calc-unit") if batch_fast else None,
+            seed_limit=2 if batch_fast else None,
+        )
     return result
 
 
@@ -1523,6 +1339,7 @@ def _fit_full_zview_double_cnls(
     warm_start: Optional[FitOutcome] = None,
     use_drt_guided_guess: bool = True,
     batch_fast: bool = False,
+    drt_guide: Optional[DrtGuide] = None,
 ):
     arc1_elements = arc1_fit.circuit.get_elements()
     arc2_elements = arc2_fit.circuit.get_elements()
@@ -1585,68 +1402,66 @@ def _fit_full_zview_double_cnls(
         upper,
         seeds,
         param_count=len(x0),
-        max_nfev=15000 if batch_fast else 25000,
+        max_nfev=FIT_CONFIG.zview_double_fast_max_nfev if batch_fast else FIT_CONFIG.zview_double_full_max_nfev,
         weight_tags=("calc-modulus", "calc-unit") if batch_fast else None,
         seed_limit=3 if batch_fast else None,
     )
     if result is not None or not use_drt_guided_guess:
         return result
-    try:
-        from eismaster.analysis.native_drt import compute_drt, find_drt_peaks
-        tau, gamma, rs_drt = compute_drt(spectrum)
-        peaks = find_drt_peaks(tau, gamma)
-        if len(peaks) >= 2:
-            p1 = peaks[0]
-            p2 = peaks[-1]
-            q1 = max(1.0 / (max(p1["R"], 1e-4) * (2 * math.pi / max(p1["tau"], 1e-6)) ** p1["n"]), 1e-12)
-            q2 = max(1.0 / (max(p2["R"], 1e-4) * (2 * math.pi / max(p2["tau"], 1e-6)) ** p2["n"]), 1e-12)
-            drt_x0 = x0.copy()
-            drt_x0[0] = max(rs_drt, 1e-6)
-            drt_x0[1] = q1
-            drt_x0[2] = p1["n"]
-            drt_x0[3] = max(p1["R"], 1e-4)
-            drt_x0[4] = q2
-            drt_x0[5] = p2["n"]
-            drt_x0[6] = max(p2["R"], 1e-4)
-            seeds = [drt_x0] + seeds[:2]
-            return _solve_zview_cnls(
-                freq,
-                z_exp,
-                _zview_double_model,
-                lower,
-                upper,
-                seeds,
-                param_count=len(x0),
-                max_nfev=22000 if batch_fast else 40000,
-                weight_tags=("calc-modulus", "calc-unit") if batch_fast else None,
-                seed_limit=2 if batch_fast else None,
-            )
-        if len(peaks) == 1:
-            p1 = peaks[0]
-            q1 = max(1.0 / (max(p1["R"], 1e-4) * (2 * math.pi / max(p1["tau"], 1e-6)) ** p1["n"]), 1e-12)
-            drt_x0 = x0.copy()
-            drt_x0[0] = max(rs_drt, 1e-6)
-            drt_x0[1] = q1
-            drt_x0[2] = p1["n"]
-            drt_x0[3] = max(p1["R"] * 0.1, 1e-4)
-            drt_x0[4] = q1
-            drt_x0[5] = p1["n"]
-            drt_x0[6] = max(p1["R"] * 0.9, 1e-4)
-            seeds = [drt_x0] + seeds[:2]
-            return _solve_zview_cnls(
-                freq,
-                z_exp,
-                _zview_double_model,
-                lower,
-                upper,
-                seeds,
-                param_count=len(x0),
-                max_nfev=22000 if batch_fast else 40000,
-                weight_tags=("calc-modulus", "calc-unit") if batch_fast else None,
-                seed_limit=2 if batch_fast else None,
-            )
-    except Exception:
-        logger.debug("DRT seed generation failed", exc_info=True)
+    guide = drt_guide if drt_guide is not None else build_drt_guide(spectrum)
+    if guide is None:
+        return result
+    peaks = guide.peaks
+    if len(peaks) >= 2:
+        p1 = peaks[0]
+        p2 = peaks[-1]
+        q1 = max(1.0 / (max(p1["R"], 1e-4) * (2 * math.pi / max(p1["tau"], 1e-6)) ** p1["n"]), 1e-12)
+        q2 = max(1.0 / (max(p2["R"], 1e-4) * (2 * math.pi / max(p2["tau"], 1e-6)) ** p2["n"]), 1e-12)
+        drt_x0 = x0.copy()
+        drt_x0[0] = max(guide.rs, 1e-6)
+        drt_x0[1] = q1
+        drt_x0[2] = p1["n"]
+        drt_x0[3] = max(p1["R"], 1e-4)
+        drt_x0[4] = q2
+        drt_x0[5] = p2["n"]
+        drt_x0[6] = max(p2["R"], 1e-4)
+        seeds = [drt_x0] + seeds[:2]
+        return _solve_zview_cnls(
+            freq,
+            z_exp,
+            _zview_double_model,
+            lower,
+            upper,
+            seeds,
+            param_count=len(x0),
+            max_nfev=22000 if batch_fast else FIT_CONFIG.zview_double_retry_max_nfev,
+            weight_tags=("calc-modulus", "calc-unit") if batch_fast else None,
+            seed_limit=2 if batch_fast else None,
+        )
+    if len(peaks) == 1:
+        p1 = peaks[0]
+        q1 = max(1.0 / (max(p1["R"], 1e-4) * (2 * math.pi / max(p1["tau"], 1e-6)) ** p1["n"]), 1e-12)
+        drt_x0 = x0.copy()
+        drt_x0[0] = max(guide.rs, 1e-6)
+        drt_x0[1] = q1
+        drt_x0[2] = p1["n"]
+        drt_x0[3] = max(p1["R"] * 0.1, 1e-4)
+        drt_x0[4] = q1
+        drt_x0[5] = p1["n"]
+        drt_x0[6] = max(p1["R"] * 0.9, 1e-4)
+        seeds = [drt_x0] + seeds[:2]
+        return _solve_zview_cnls(
+            freq,
+            z_exp,
+            _zview_double_model,
+            lower,
+            upper,
+            seeds,
+            param_count=len(x0),
+            max_nfev=22000 if batch_fast else FIT_CONFIG.zview_double_retry_max_nfev,
+            weight_tags=("calc-modulus", "calc-unit") if batch_fast else None,
+            seed_limit=2 if batch_fast else None,
+        )
     return result
 
 
@@ -1672,8 +1487,17 @@ def _zview_double_model(freq_hz: np.ndarray, params: np.ndarray) -> np.ndarray:
 
 def _zview_warburg_open(omega: np.ndarray, wo_r: float, wo_t: float, wo_p: float) -> np.ndarray:
     x = (1j * omega * wo_t) ** wo_p
-    tanh_x = np.tanh(np.where(np.abs(x) > 50.0, 50.0 + 0.0j, x))
-    return wo_r / (x * tanh_x)
+    abs_x = np.abs(x)
+    tanh_x = np.ones_like(x, dtype=complex)
+    finite_mask = abs_x <= 50.0
+    tanh_x[finite_mask] = np.tanh(x[finite_mask])
+    small = abs_x < 1e-8
+    denom = x * tanh_x
+    if np.any(small):
+        # tanh(x) = x - x^3/3 + O(x^5), so x*tanh(x) = x^2 - x^4/3 + O(x^6)
+        denom = np.where(small, x * x * (1.0 - (x * x) / 3.0), denom)
+    denom = np.where(np.abs(denom) < 1e-30, 1e-30 + 0.0j, denom)
+    return wo_r / denom
 
 
 def _zview_statistics(result, n_points: int) -> dict[str, float]:
@@ -1716,6 +1540,9 @@ def _zview_residual(
     if weight_tag == "data-special":
         sigma = _local_noise_estimate(z_exp)
         return np.concatenate([diff.real / sigma, diff.imag / sigma])
+    if weight_tag == "calc-modulus-zview":
+        weight = np.maximum(np.abs(z_model), floor)
+        return np.concatenate([diff.real / weight, diff.imag / weight])
     weight = np.maximum(np.abs(z_exp), floor)
     return np.concatenate([diff.real / weight, diff.imag / weight])
 
@@ -1776,7 +1603,7 @@ def _cnls_diagnostics(result: OptimizeResult, n_points: int, names: list[str]) -
             off_diag = corr - np.diag(np.diag(corr))
             corr_max = float(np.max(np.abs(off_diag)))
             stats["correlation_matrix_max"] = corr_max
-            if corr_max > 0.95:
+            if corr_max > FIT_CONFIG.corr_warn_threshold:
                 warnings.append("strong_parameter_correlation")
     except Exception:
         logger.debug("Correlation diagnostics failed", exc_info=True)
@@ -1848,47 +1675,6 @@ def _statistics_from_fit(result: object) -> dict[str, float]:
 
 
 def _extract_parameters(template_key: str, circuit: object) -> dict[str, float]:
-    elements = circuit.get_elements()
-    if template_key == "l_rs_rct_cpe_w":
-        return {
-            "L_h": float(elements[0].get_values()["L"]),
-            "Rs": float(elements[1].get_values()["R"]),
-            "Qdl": float(elements[2].get_values()["Y"]),
-            "ndl": float(elements[2].get_values()["n"]),
-            "Rct": float(elements[3].get_values()["R"]),
-            "W": float(elements[4].get_values()["Y"]),
-        }
-    if template_key == "l_rs_rsei_cpe_rct_cpe_w":
-        return {
-            "L_h": float(elements[0].get_values()["L"]),
-            "Rs": float(elements[1].get_values()["R"]),
-            "Qsei": float(elements[2].get_values()["Y"]),
-            "nsei": float(elements[2].get_values()["n"]),
-            "Rsei": float(elements[3].get_values()["R"]),
-            "Qdl": float(elements[4].get_values()["Y"]),
-            "ndl": float(elements[4].get_values()["n"]),
-            "Rct": float(elements[5].get_values()["R"]),
-            "W": float(elements[6].get_values()["Y"]),
-        }
-    if template_key == "l_rs_r1_cpe_r2_cpe":
-        return {
-            "L_h": float(elements[0].get_values()["L"]),
-            "Rs": float(elements[1].get_values()["R"]),
-            "Q1": float(elements[2].get_values()["Y"]),
-            "n1": float(elements[2].get_values()["n"]),
-            "R1": float(elements[3].get_values()["R"]),
-            "Q2": float(elements[4].get_values()["Y"]),
-            "n2": float(elements[4].get_values()["n"]),
-            "R2": float(elements[5].get_values()["R"]),
-        }
-    if template_key == "rs_cpe_rct_w_series":
-        return {
-            "Rs": float(elements[0].get_values()["R"]),
-            "Qdl": float(elements[1].get_values()["Y"]),
-            "ndl": float(elements[1].get_values()["n"]),
-            "Rct": float(elements[2].get_values()["R"]),
-            "W": float(elements[3].get_values()["Y"]),
-        }
     return {}
 
 
@@ -1934,14 +1720,6 @@ def _peak_frequencies(freq: np.ndarray, y: np.ndarray, target_count: int) -> lis
 
 
 def _primary_parameter_aliases(template_key: str, params: dict[str, float]) -> dict[str, float]:
-    if template_key == "l_rs_rct_cpe_w":
-        return {"Rs": params["Rs"], "Rct": params["Rct"]}
-    if template_key == "l_rs_rsei_cpe_rct_cpe_w":
-        return {"Rs": params["Rs"], "Rsei": params["Rsei"], "Rct": params["Rct"]}
-    if template_key == "l_rs_r1_cpe_r2_cpe":
-        return {"Rs": params["Rs"], "R1": params["R1"], "R2": params["R2"]}
-    if template_key == "rs_cpe_rct_w_series":
-        return {"Rs": params["Rs"], "Rct": params["Rct"]}
     if template_key == "zview_double_rq_qrwo":
         return {"Rs": params["Rs"], "R2": params["R2"], "R3": params["R3"]}
     return {}

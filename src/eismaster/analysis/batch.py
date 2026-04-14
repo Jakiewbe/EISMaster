@@ -17,7 +17,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from eismaster.analysis.fitting import fit_spectrum
+from eismaster.analysis.fitting import DrtGuide, FIT_CONFIG, build_drt_guide, fit_spectrum
 from eismaster.analysis.quality import QualityReport, assess_spectrum_quality
 from eismaster.analysis.segmentation import SegmentDetection, detect_segments
 from eismaster.models import BatchItemResult, BatchSummary, FitOutcome, SpectrumData
@@ -31,7 +31,7 @@ SINGLE_SWITCH_COUNT = 2
 def _worker_fixed(spectrum: SpectrumData, mode: str, model_key: str, batch_fast: bool = True) -> BatchItemResult:
     quality = assess_spectrum_quality(spectrum, run_kk=False)
     hint = detect_segments(spectrum, mode=mode)
-    fit = _fit_single_safe(spectrum, model_key, hint, batch_fast=batch_fast)
+    fit = _fit_single_safe(spectrum, model_key, hint, batch_fast=batch_fast, drt_cache={})
     fit = _prepend_reason(fit, f"Fixed mode selected: {_mode_label(mode)}")
     return BatchItemResult(spectrum=spectrum, quality=quality, fit=fit)
 
@@ -40,10 +40,11 @@ def _worker_auto(spectrum: SpectrumData, batch_fast: bool = True) -> tuple[FitOu
     quality = assess_spectrum_quality(spectrum, run_kk=False)
     auto_hint = detect_segments(spectrum, mode="auto")
     single_hint = detect_segments(spectrum, mode="single")
-    single_fit = _fit_single_safe(spectrum, SINGLE_MODEL_KEY, single_hint, batch_fast=batch_fast)
+    drt_cache: dict[str, Optional[DrtGuide]] = {}
+    single_fit = _fit_single_safe(spectrum, SINGLE_MODEL_KEY, single_hint, batch_fast=batch_fast, drt_cache=drt_cache)
     if _should_run_double_fit(single_fit, auto_hint):
         double_hint = detect_segments(spectrum, mode="double")
-        double_fit = _fit_single_safe(spectrum, DOUBLE_MODEL_KEY, double_hint, warm_start=None, batch_fast=batch_fast)
+        double_fit = _fit_single_safe(spectrum, DOUBLE_MODEL_KEY, double_hint, warm_start=None, batch_fast=batch_fast, drt_cache=drt_cache)
     else:
         double_fit = FitOutcome(
             model_key=DOUBLE_MODEL_KEY,
@@ -193,9 +194,10 @@ def _analyze_batch_fixed_sequential(
     total = len(spectra)
     previous_fit: FitOutcome | None = None
     for index, spectrum in enumerate(spectra, start=1):
+        drt_cache: dict[str, Optional[DrtGuide]] = {}
         quality = assess_spectrum_quality(spectrum, run_kk=False)
         hint = detect_segments(spectrum, mode=mode)
-        fit = _fit_single_safe(spectrum, model_key, hint, warm_start=previous_fit, batch_fast=batch_fast)
+        fit = _fit_single_safe(spectrum, model_key, hint, warm_start=previous_fit, batch_fast=batch_fast, drt_cache=drt_cache)
         fit = _prepend_reason(fit, f"Fixed mode selected: {_mode_label(mode)}")
         item = BatchItemResult(spectrum=spectrum, quality=quality, fit=fit)
         items.append(item)
@@ -220,13 +222,28 @@ def _analyze_batch_auto_sequential(
     previous_double_fit: FitOutcome | None = None
 
     for index, spectrum in enumerate(spectra, start=1):
+        drt_cache: dict[str, Optional[DrtGuide]] = {}
         quality = assess_spectrum_quality(spectrum, run_kk=False)
         auto_hint = detect_segments(spectrum, mode="auto")
         single_hint = detect_segments(spectrum, mode="single")
-        single_fit = _fit_single_safe(spectrum, SINGLE_MODEL_KEY, single_hint, warm_start=previous_single_fit, batch_fast=batch_fast)
+        single_fit = _fit_single_safe(
+            spectrum,
+            SINGLE_MODEL_KEY,
+            single_hint,
+            warm_start=previous_single_fit,
+            batch_fast=batch_fast,
+            drt_cache=drt_cache,
+        )
         if _should_run_double_fit(single_fit, auto_hint):
             double_hint = detect_segments(spectrum, mode="double")
-            double_fit = _fit_single_safe(spectrum, DOUBLE_MODEL_KEY, double_hint, warm_start=previous_double_fit, batch_fast=batch_fast)
+            double_fit = _fit_single_safe(
+                spectrum,
+                DOUBLE_MODEL_KEY,
+                double_hint,
+                warm_start=previous_double_fit,
+                batch_fast=batch_fast,
+                drt_cache=drt_cache,
+            )
             previous_double_fit = double_fit
         else:
             double_fit = FitOutcome(
@@ -276,6 +293,7 @@ def _fit_single_safe(
     hint: SegmentDetection,
     warm_start: FitOutcome | None = None,
     batch_fast: bool = True,
+    drt_cache: Optional[dict[str, Optional[DrtGuide]]] = None,
 ) -> FitOutcome:
     try:
         fit = fit_spectrum(
@@ -289,6 +307,7 @@ def _fit_single_safe(
             batch_fast=batch_fast,
         )
         if _needs_expensive_retry(fit):
+            drt_guide = _get_cached_drt_guide(spectrum, drt_cache)
             retry = fit_spectrum(
                 spectrum,
                 model_key,
@@ -298,12 +317,24 @@ def _fit_single_safe(
                 auto_preprocess=False,
                 use_drt_guided_guess=True,
                 batch_fast=batch_fast,
+                drt_guide=drt_guide,
             )
             if _fit_is_usable(retry):
                 return retry
         return fit
     except Exception as exc:
         return FitOutcome(model_key=model_key, model_label="?", status="failed", message=f"Fit execution failed: {exc}")
+
+
+def _get_cached_drt_guide(
+    spectrum: SpectrumData,
+    drt_cache: Optional[dict[str, Optional[DrtGuide]]],
+) -> Optional[DrtGuide]:
+    if drt_cache is None:
+        return build_drt_guide(spectrum)
+    if "guide" not in drt_cache:
+        drt_cache["guide"] = build_drt_guide(spectrum)
+    return drt_cache["guide"]
 
 
 def _preferred_mode(
@@ -392,11 +423,11 @@ def _fit_scientific_score(fit: FitOutcome) -> float:
         corr = float(corr)
         if not np.isfinite(corr):
             score += 20.0
-        elif corr > 0.995:
+        elif corr > FIT_CONFIG.corr_error_threshold:
             score += 16.0
         elif corr > 0.98:
             score += 8.0
-        elif corr > 0.95:
+        elif corr > FIT_CONFIG.corr_warn_threshold:
             score += 3.0
 
     for error_key in ("Rs_stderr_pct", "Rsei_stderr_pct", "Rct_stderr_pct"):
@@ -408,7 +439,7 @@ def _fit_scientific_score(fit: FitOutcome) -> float:
             score += 15.0
         elif err > 50.0:
             score += 16.0
-        elif err > 20.0:
+        elif err > FIT_CONFIG.primary_error_warn_pct:
             score += 12.0
         elif err > 10.0:
             score += 4.0
@@ -506,7 +537,7 @@ def _should_run_double_fit(single_fit: FitOutcome, auto_hint: SegmentDetection) 
     return False
 
 
-def _has_primary_high_error(fit: FitOutcome, threshold: float = 20.0) -> bool:
+def _has_primary_high_error(fit: FitOutcome, threshold: float = FIT_CONFIG.primary_error_warn_pct) -> bool:
     keys = ("Rs_stderr_pct", "Rsei_stderr_pct", "Rct_stderr_pct") if fit.model_key == DOUBLE_MODEL_KEY else ("Rs_stderr_pct", "Rct_stderr_pct")
     found = False
     for key in keys:

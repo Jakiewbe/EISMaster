@@ -44,8 +44,8 @@ def apply_nanobanana_theme(app: QApplication) -> None:
     palette.setColor(QPalette.HighlightedText, QColor(NANOBANANA_BG_DARK))
     app.setPalette(palette)
     
-    # 2. Modern Font
-    font = QFont("Segoe UI Variable Display, Segoe UI, Roboto, Helvetica", 10)
+    # 2. Modern Font (with Chinese fallback)
+    font = QFont("Segoe UI Variable Display, Segoe UI, Roboto, Helvetica, Microsoft YaHei, SimHei", 10)
     app.setFont(font)
 
     # 3. Conservative global stylesheet.

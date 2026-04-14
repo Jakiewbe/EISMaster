@@ -71,9 +71,16 @@ def _scaled_mad(values: np.ndarray) -> float:
     return 1.4826 * float(np.median(np.abs(values - median)))
 
 
-def _detect_outliers_enhanced(spectrum: SpectrumData, mask: np.ndarray) -> np.ndarray:
-    """Conservative curvature/slope/log-frequency outlier detection."""
-
+def detect_outliers_common(
+    spectrum: SpectrumData,
+    mask: np.ndarray,
+    *,
+    curvature_scale: float = 5.0,
+    slope_scale: float = 5.0,
+    gradient_scale: float = 6.0,
+    vote_threshold: int = 2,
+) -> np.ndarray:
+    """Shared curvature/slope/log-frequency outlier detection."""
     flags = np.zeros(spectrum.n_points, dtype=bool)
     idx = np.flatnonzero(mask)
     if idx.size < 7:
@@ -87,7 +94,7 @@ def _detect_outliers_enhanced(spectrum: SpectrumData, mask: np.ndarray) -> np.nd
     curv[1:-1] = np.abs(y[:-2] - 2.0 * y[1:-1] + y[2:])
     med_c = float(np.median(curv))
     mad_c = _scaled_mad(curv)
-    thresh_c = med_c + 5.0 * max(mad_c, 1e-12)
+    thresh_c = med_c + curvature_scale * max(mad_c, 1e-12)
 
     dx = np.diff(x)
     dy = np.diff(y)
@@ -97,7 +104,7 @@ def _detect_outliers_enhanced(spectrum: SpectrumData, mask: np.ndarray) -> np.nd
         slope_diff[1:-1] = np.abs(np.diff(slopes))
     med_s = float(np.median(slope_diff))
     mad_s = _scaled_mad(slope_diff)
-    thresh_s = med_s + 5.0 * max(mad_s, 1e-12)
+    thresh_s = med_s + slope_scale * max(mad_s, 1e-12)
 
     log_grad = np.gradient(y, log_f, edge_order=1)
     smooth_jump = np.zeros(idx.size, dtype=float)
@@ -107,7 +114,7 @@ def _detect_outliers_enhanced(spectrum: SpectrumData, mask: np.ndarray) -> np.nd
             smooth_jump[1:-1] = second_grad
     med_g = float(np.median(smooth_jump))
     mad_g = _scaled_mad(smooth_jump)
-    thresh_g = med_g + 6.0 * max(mad_g, 1e-12)
+    thresh_g = med_g + gradient_scale * max(mad_g, 1e-12)
 
     for k in range(1, idx.size - 1):
         score = 0
@@ -117,7 +124,12 @@ def _detect_outliers_enhanced(spectrum: SpectrumData, mask: np.ndarray) -> np.nd
             score += 1
         if smooth_jump[k] > thresh_g:
             score += 1
-        if score >= 2:
+        if score >= vote_threshold:
             flags[idx[k]] = True
 
     return flags
+
+
+def _detect_outliers_enhanced(spectrum: SpectrumData, mask: np.ndarray) -> np.ndarray:
+    """Conservative curvature/slope/log-frequency outlier detection."""
+    return detect_outliers_common(spectrum, mask)

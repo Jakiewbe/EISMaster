@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from eismaster.analysis.native_drt import compute_drt, find_drt_peaks
+from eismaster.analysis.native_drt import _solve_cpe_n_from_fwhm, compute_drt, find_drt_peaks
 from eismaster.models import SpectrumData
 
 
@@ -67,6 +67,11 @@ class NativeDrtTests(unittest.TestCase):
         self.assertIn("tau", peaks[0])
         self.assertIn("R", peaks[0])
         self.assertIn("n", peaks[0])
+
+    def test_solve_cpe_n_from_fwhm_returns_reasonable_value(self) -> None:
+        n_value = _solve_cpe_n_from_fwhm(1.0)
+        self.assertGreaterEqual(n_value, 0.4)
+        self.assertLessEqual(n_value, 1.0)
 
 
 if __name__ == "__main__":

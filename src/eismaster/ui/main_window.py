@@ -125,6 +125,21 @@ class BatchFitWorker(QObject):
             self.finished.emit(None, exc)
     def _emit_progress(self, index: int, total: int, item) -> None:
         self.progress.emit(index, total, item.spectrum.display_name)
+class SingleFitWorker(QObject):
+    finished = Signal(object, object, str)
+    def __init__(self, spectrum: SpectrumData, template_key: str,
+                 arc_ranges: list[ArcRange] | None) -> None:
+        super().__init__()
+        self.spectrum = spectrum
+        self.template_key = template_key
+        self.arc_ranges = arc_ranges
+        self.display_name = spectrum.display_name
+    def run(self) -> None:
+        try:
+            fit = fit_spectrum(self.spectrum, self.template_key, arc_ranges=self.arc_ranges)
+            self.finished.emit(fit, None, self.display_name)
+        except Exception as exc:  # pragma: no cover
+            self.finished.emit(None, exc, self.display_name)
 @dataclass
 class AppState:
     spectra: list[SpectrumData] = field(default_factory=list)
@@ -136,6 +151,7 @@ class AppState:
     current_index: int = -1
     drt_busy: bool = False
     batch_busy: bool = False
+    fit_busy: bool = False
 class MainWindow(MSFluentWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -144,6 +160,8 @@ class MainWindow(MSFluentWindow):
         self._matlab_worker: MatlabDrtWorker | None = None
         self._batch_thread: QThread | None = None
         self._batch_worker: BatchFitWorker | None = None
+        self._fit_thread: QThread | None = None
+        self._fit_worker: SingleFitWorker | None = None
         self._last_batch_progress_time: float = 0.0
         self._last_matlab_result: MatlabDrtResult | None = None
         self._last_drt_spectra: list[SpectrumData] = []
@@ -154,7 +172,7 @@ class MainWindow(MSFluentWindow):
         self._range_scatter_items: list[object] = []
         # 1. UI Initialization Settings
         setTheme(Theme.DARK)
-        self.setMicaEffectEnabled(True)
+        self.setMicaEffectEnabled(False)
         self.setWindowTitle("EISMaster 谱图分析工具")
         self.setMinimumSize(1200, 780)
         self.resize(1500, 960)
@@ -530,18 +548,21 @@ class MainWindow(MSFluentWindow):
     def _configure_plots(self) -> None:
         if pg is None:
             return
-        pg.setConfigOptions(antialias=False, foreground="#A0A0B0")
+        pg.setConfigOptions(antialias=True, foreground="#A0A0B0")
         for plot in self.findChildren(pg.PlotWidget):
             item = plot.getPlotItem()
-            plot.setBackground("#121214")
+            plot.setBackground("#0D0D10")
             plot.setMenuEnabled(False)
-            plot.showGrid(x=True, y=True, alpha=0.15)
+            plot.showGrid(x=True, y=True, alpha=0.12)
             item.setDownsampling(auto=True, mode="peak")
             item.setClipToView(True)
             item.getViewBox().setMouseEnabled(x=True, y=True)
             for axis in ("bottom", "left"):
-                item.getAxis(axis).setPen(pg.mkPen("#cfd4dc"))
-                item.getAxis(axis).setTextPen(pg.mkPen("#6e6e73"))
+                item.getAxis(axis).setPen(pg.mkPen("#555566", width=1))
+                item.getAxis(axis).setTextPen(pg.mkPen("#8888A0"))
+            title_item = item.titleLabel
+            if title_item is not None:
+                title_item.setText(title_item.text, color="#B0B0C8")
         if hasattr(self, "bode_phase_plot") and hasattr(self, "bode_mag_plot"):
             self.bode_phase_plot.setXLink(self.bode_mag_plot)
     def _info_box(self) -> QTextEdit:
@@ -785,6 +806,8 @@ class MainWindow(MSFluentWindow):
             return "DRT 运行中"
         if self.state.batch_busy:
             return "批量拟合进行中"
+        if self.state.fit_busy:
+            return "正在拟合..."
         if current is not None:
             fit = self._latest_fit_for_spectrum(current.display_name)
             if fit is not None:
@@ -873,13 +896,16 @@ class MainWindow(MSFluentWindow):
         self._fill_table(self.data_table, headers, rows)
         if pg is None:
             return
-        pen = pg.mkPen("#0071e3", width=1.6)
-        brush = pg.mkBrush(QColor("#5ac8fa"))
+        data_pen = pg.mkPen("#4FC3F7", width=1.5)
+        data_brush = pg.mkBrush(QColor("#4FC3F7"))
+        data_symbol_pen = pg.mkPen("#FFFFFF", width=0.5)
+        bode_pen = pg.mkPen("#81D4FA", width=1.5)
+        bode_brush = pg.mkBrush(QColor("#81D4FA"))
         for plot in (self.nyquist_plot, self.bode_mag_plot, self.bode_phase_plot):
             self._reset_plot(plot)
-        self.nyquist_plot.plot(spectrum.z_real_ohm, spectrum.minus_z_imag_ohm, pen=pen, symbol="o", symbolSize=5, symbolBrush=brush)
-        self.bode_mag_plot.plot(spectrum.freq_hz, spectrum.z_mod_ohm, pen=pen, symbol="o", symbolSize=4, symbolBrush=brush)
-        self.bode_phase_plot.plot(spectrum.freq_hz, spectrum.phase_deg, pen=pen, symbol="o", symbolSize=4, symbolBrush=brush)
+        self.nyquist_plot.plot(spectrum.z_real_ohm, spectrum.minus_z_imag_ohm, pen=data_pen, symbol="o", symbolSize=6, symbolBrush=data_brush, symbolPen=data_symbol_pen)
+        self.bode_mag_plot.plot(spectrum.freq_hz, spectrum.z_mod_ohm, pen=bode_pen, symbol="o", symbolSize=5, symbolBrush=bode_brush, symbolPen=data_symbol_pen)
+        self.bode_phase_plot.plot(spectrum.freq_hz, spectrum.phase_deg, pen=bode_pen, symbol="o", symbolSize=5, symbolBrush=bode_brush, symbolPen=data_symbol_pen)
         self._set_nyquist_axes(self.nyquist_plot, spectrum.z_real_ohm, spectrum.minus_z_imag_ohm)
 
     def _run_kk_for_current(self) -> None:
@@ -968,17 +994,17 @@ class MainWindow(MSFluentWindow):
         self._update_global_status()
     def _update_arc_info_labels(self, spectrum: SpectrumData | None = None) -> None:
         if spectrum is None or not self._is_zview_template_selected():
-            self.segment_peak_info_label.setText("??: -")
-            self.segment_arc1_label.setText("?1: -")
-            self.segment_arc2_label.setText("?2: -")
-            self.segment_tail_label.setText("??: -")
+            self.segment_peak_info_label.setText("峰值: -")
+            self.segment_arc1_label.setText("弧1: -")
+            self.segment_arc2_label.setText("弧2: -")
+            self.segment_tail_label.setText("尾部: -")
             return
         ranges = self._build_arc_ranges(spectrum)
         if not ranges:
-            self.segment_peak_info_label.setText("??: -")
-            self.segment_arc1_label.setText("?1: -")
-            self.segment_arc2_label.setText("?2: -")
-            self.segment_tail_label.setText("??: -")
+            self.segment_peak_info_label.setText("峰值: -")
+            self.segment_arc1_label.setText("弧1: -")
+            self.segment_arc2_label.setText("弧2: -")
+            self.segment_tail_label.setText("尾部: -")
             return
         minus_z = spectrum.minus_z_imag_ohm
         peak_bits = []
@@ -989,7 +1015,7 @@ class MainWindow(MSFluentWindow):
             pk = arc.start + int(np.argmax(minus_z[sl]))
             freq = self._arc_freq_for_index(spectrum, pk)
             peak_bits.append(f"p{i+1}=idx {pk} @ {self._format_arc_frequency(freq)} Hz")
-        self.segment_peak_info_label.setText("??: " + (", ".join(peak_bits) if peak_bits else "-"))
+        self.segment_peak_info_label.setText("峰值: " + (", ".join(peak_bits) if peak_bits else "-"))
 
         def region_text(name: str, start: int, stop: int) -> str:
             f0 = self._format_arc_frequency(self._arc_freq_for_index(spectrum, start))
@@ -1001,24 +1027,24 @@ class MainWindow(MSFluentWindow):
             a1, a2 = ranges[0], ranges[1]
             arc2_start = min(a1.end + 1, spectrum.n_points - 1)
             tail_start = a2.end + 1
-            self.segment_arc1_label.setText(region_text("?1", 0, a1.end))
+            self.segment_arc1_label.setText(region_text("弧1", 0, a1.end))
             if arc2_start <= a2.end:
-                self.segment_arc2_label.setText(region_text("?2", arc2_start, a2.end))
+                self.segment_arc2_label.setText(region_text("弧2", arc2_start, a2.end))
             else:
-                self.segment_arc2_label.setText("?2: -")
+                self.segment_arc2_label.setText("弧2: -")
             if tail_start < spectrum.n_points:
-                self.segment_tail_label.setText(region_text("??", tail_start, spectrum.n_points - 1))
+                self.segment_tail_label.setText(region_text("尾部", tail_start, spectrum.n_points - 1))
             else:
-                self.segment_tail_label.setText("??: -")
+                self.segment_tail_label.setText("尾部: -")
         elif ranges:
             a1 = ranges[0]
             tail_start = a1.end + 1
-            self.segment_arc1_label.setText(region_text("?1", 0, a1.end))
-            self.segment_arc2_label.setText("?2: -")
+            self.segment_arc1_label.setText(region_text("弧1", 0, a1.end))
+            self.segment_arc2_label.setText("弧2: -")
             if tail_start < spectrum.n_points:
-                self.segment_tail_label.setText(region_text("??", tail_start, spectrum.n_points - 1))
+                self.segment_tail_label.setText(region_text("尾部", tail_start, spectrum.n_points - 1))
             else:
-                self.segment_tail_label.setText("??: -")
+                self.segment_tail_label.setText("尾部: -")
     def _clear_segment_overlay(self) -> None:
         if pg is None or not hasattr(self, "fit_nyquist_plot"):
             self._segment_overlay_items = []
@@ -1045,19 +1071,19 @@ class MainWindow(MSFluentWindow):
         if len(ranges) >= 2 and self._resolve_segment_mode() == "double":
             a1, a2 = ranges[0], ranges[1]
             sections = [
-                (0, a1.end, "#ff9500"),
-                (a1.end + 1, a2.end, "#af52de"),
-                (a2.end + 1, spectrum.n_points - 1, "#ff3b30"),
+                (0, a1.end, "#FFB74D"),
+                (a1.end + 1, a2.end, "#CE93D8"),
+                (a2.end + 1, spectrum.n_points - 1, "#EF5350"),
             ]
         elif ranges:
             a1 = ranges[0]
-            sections = [(0, a1.end, "#ff9500"), (a1.end + 1, spectrum.n_points - 1, "#ff3b30")]
+            sections = [(0, a1.end, "#FFB74D"), (a1.end + 1, spectrum.n_points - 1, "#EF5350")]
         for start, stop, color in sections:
             if stop <= start:
                 continue
             xs = spectrum.z_real_ohm[start : stop + 1]
             ys = spectrum.minus_z_imag_ohm[start : stop + 1]
-            item = self.fit_nyquist_plot.plot(xs, ys, pen=pg.mkPen(color=color, width=2, style=Qt.DashLine))
+            item = self.fit_nyquist_plot.plot(xs, ys, pen=pg.mkPen(color=color, width=2.5, style=Qt.DashLine))
             self._segment_overlay_items.append(item)
     def _update_arc_preview(self, spectrum: SpectrumData) -> None:
         self._update_arc_info_labels(spectrum)
@@ -1132,14 +1158,14 @@ class MainWindow(MSFluentWindow):
         diagnosis_suggestions = list(getattr(fit, "diagnosis_suggestions", []) or [])
         note_head = diagnosis_explanation or (message.split(" [", 1)[0].strip() if message else "")
         if note_head:
-            lines.extend(["", "??", f"  {note_head}"])
+            lines.extend(["", "诊断", f"  {note_head}"])
         if diagnosis_explanation:
-            detail_lines.extend(["", f"??: {diagnosis_type or 'n/a'} ({diagnosis_severity or 'n/a'})", f"  {diagnosis_explanation}"])
+            detail_lines.extend(["", f"诊断: {diagnosis_type or 'n/a'} ({diagnosis_severity or 'n/a'})", f"  {diagnosis_explanation}"])
             if diagnosis_suggestions:
-                detail_lines.append("??")
+                detail_lines.append("建议")
                 detail_lines.extend(f"  - {text}" for text in diagnosis_suggestions[:3])
         if message:
-            detail_lines.extend(["", f"????: {message}"])
+            detail_lines.extend(["", f"详细信息: {message}"])
 
         advanced_names = ("Rsei_global", "Rct_global", "Wo_R", "Wo_T", "Wo_P", "CPE_T", "CPE_P", "Q1", "n1", "Q2", "n2")
         advanced_values = [f"  {name} = {fit.parameters[name]:.8g}" for name in advanced_names if name in fit.parameters]
@@ -1186,7 +1212,7 @@ class MainWindow(MSFluentWindow):
             self.fit_nyquist_plot.plot(
                 fit.predicted_real_ohm,
                 -fit.predicted_imag_ohm,
-                pen=pg.mkPen("#34c759", width=2.1),
+                pen=pg.mkPen("#30d158", width=2.5),
                 name="拟合曲线",
             )
             self._set_nyquist_axes(
@@ -1205,17 +1231,36 @@ class MainWindow(MSFluentWindow):
         self.fit_detail_text.setVisible(visible)
         self.fit_detail_btn.setText("详情" if visible else "详情")
     def _fit_current(self) -> None:
+        if self.state.fit_busy:
+            return
         spectrum = self._current_spectrum()
         if spectrum is None:
             return
         template_key = str(self.template_combo.currentData())
         arc_ranges = self._build_arc_ranges(spectrum)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            fit = fit_spectrum(spectrum, template_key, arc_ranges=arc_ranges)
-        finally:
-            QApplication.restoreOverrideCursor()
-        self.state.fits[(spectrum.display_name, template_key)] = fit
+        self.state.fit_busy = True
+        self.fit_current_btn.setEnabled(False)
+        self._fit_thread = QThread(self)
+        self._fit_worker = SingleFitWorker(spectrum, template_key, arc_ranges)
+        self._fit_worker.moveToThread(self._fit_thread)
+        self._fit_thread.started.connect(self._fit_worker.run)
+        self._fit_worker.finished.connect(self._on_single_fit_finished)
+        self._fit_worker.finished.connect(self._fit_thread.quit)
+        self._fit_worker.finished.connect(self._fit_worker.deleteLater)
+        self._fit_thread.finished.connect(self._fit_thread.deleteLater)
+        self._fit_thread.start()
+    def _on_single_fit_finished(self, fit: FitOutcome | None, error: Exception | None, display_name: str) -> None:
+        self.state.fit_busy = False
+        self.fit_current_btn.setEnabled(True)
+        if error is not None:
+            self._warn(f"拟合失败: {error}")
+            return
+        if fit is None:
+            return
+        spectrum = next((s for s in self.state.spectra if s.display_name == display_name), None)
+        if spectrum is None:
+            return
+        self.state.fits[(spectrum.display_name, fit.model_key)] = fit
         self._sync_fit_to_batch(spectrum, fit)
         self._refresh_fit_view(spectrum)
     def _fit_batch(self) -> None:
@@ -1313,9 +1358,9 @@ class MainWindow(MSFluentWindow):
         x = np.arange(1, len(summary.items) + 1, dtype=float)
         cache: dict[str, dict[str, object]] = {}
         for name, color, error_key in (
-            ("Rs", "#0071e3", "Rs_stderr_pct"),
-            ("Rsei", "#ff9500", "Rsei_stderr_pct"),
-            ("Rct", "#34c759", "Rct_stderr_pct"),
+            ("Rs", "#42A5F5", "Rs_stderr_pct"),
+            ("Rsei", "#FFA726", "Rsei_stderr_pct"),
+            ("Rct", "#66BB6A", "Rct_stderr_pct"),
         ):
             values = np.asarray([np.nan if item.fit is None else item.fit.parameters.get(name, np.nan) for item in summary.items], dtype=float)
             ok_x: list[float] = []
@@ -1548,7 +1593,7 @@ class MainWindow(MSFluentWindow):
             logger.warning("DRT export failed: %s", exc, exc_info=True)
             self._warn(f"DRT 矩阵导出失败: {exc}")
         lines = [
-            f"??: {' '.join(result.command)}",
+            f"命令: {' '.join(result.command)}",
             "",
         ]
         self.matlab_status.setPlainText(
@@ -1617,9 +1662,6 @@ class MainWindow(MSFluentWindow):
         return first if first.suffix.lower() == ".xlsx" else first.parent
     def _set_nyquist_axes(self, plot, x_values: np.ndarray, y_values: np.ndarray) -> None:
         if pg is not None:
-            class InteractiveViewBox(pg.ViewBox):
-                def __init__(self, *args, **kwargs):
-                    super().__init__(*args, **kwargs)
             x = np.asarray(x_values, dtype=float)
             y = np.asarray(y_values, dtype=float)
             mask = np.isfinite(x) & np.isfinite(y)
@@ -1631,11 +1673,11 @@ class MainWindow(MSFluentWindow):
             y_min = min(float(np.min(y)), 0.0)
             x_max = float(np.max(x))
             y_max = float(np.max(y))
-            span = max(x_max - x_min, y_max - y_min, 1.0)
-            pad = span * 0.08
-            plot.setAspectLocked(False)
-            plot.setXRange(x_min - pad, x_min + span + pad, padding=0.0)
-            plot.setYRange(y_min - pad, y_min + span + pad, padding=0.0)
+            pad_x = max((x_max - x_min) * 0.06, 0.5)
+            pad_y = max((y_max - y_min) * 0.06, 0.5)
+            plot.setAspectLocked(True, ratio=1.0)
+            plot.setXRange(x_min - pad_x, x_max + pad_x, padding=0.0)
+            plot.setYRange(y_min - pad_y, y_max + pad_y, padding=0.0)
     def _reset_current_nyquist(self, plot) -> None:
         spectrum = self._current_spectrum(silent=True)
         if spectrum is None or plot is None:
@@ -1701,8 +1743,8 @@ class MainWindow(MSFluentWindow):
             pen=None,
             symbol="o",
             symbolSize=5,
-            symbolBrush="#ff9f0a",
-            symbolPen=pg.mkPen("#ff9f0a"),
+            symbolBrush="#CE93D8",
+            symbolPen=pg.mkPen("#CE93D8"),
         )
     def _ensure_legend(self, plot) -> None:
         if pg is not None and plot.plotItem.legend is None:
@@ -1783,14 +1825,15 @@ class MainWindow(MSFluentWindow):
             except Exception:
                 pass
         self._range_scatter_items = []
-        # plot the full spectrum as a blue line
+        # plot the full spectrum as a bright cyan line with white-bordered dots
         item_line = self.fit_nyquist_plot.plot(
             spectrum.z_real_ohm,
             spectrum.minus_z_imag_ohm,
-            pen=pg.mkPen("#0071e3", width=1.6),
+            pen=pg.mkPen("#4FC3F7", width=1.5),
             symbol="o",
-            symbolSize=5,
-            symbolBrush=pg.mkBrush(QColor("#5ac8fa")),
+            symbolSize=6,
+            symbolBrush=pg.mkBrush(QColor("#4FC3F7")),
+            symbolPen=pg.mkPen("#FFFFFF", width=0.5),
             name="实测数据",
         )
         self._range_scatter_items.append(item_line)

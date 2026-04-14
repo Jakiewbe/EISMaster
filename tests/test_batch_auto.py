@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from eismaster.analysis.batch import (
     _apply_hysteresis,
     _candidate_score,
     _finite_or,
+    _fit_single_safe,
     _fit_scientific_score,
     _mode_label,
     _needs_expensive_retry,
     _should_run_double_fit,
 )
+from eismaster.analysis.fitting import DrtGuide
 from eismaster.analysis.segmentation import SegmentDetection
-from eismaster.models import FitOutcome
+from eismaster.models import FitOutcome, SpectrumData, SpectrumMetadata
+import numpy as np
+from pathlib import Path
 
 
 class BatchAutoTests(unittest.TestCase):
@@ -153,6 +158,39 @@ class BatchAutoTests(unittest.TestCase):
             diagnosis_severity="warning",
         )
         self.assertTrue(_needs_expensive_retry(fit))
+
+    def test_fit_single_safe_reuses_cached_drt_guide(self) -> None:
+        spectrum = SpectrumData(
+            metadata=SpectrumMetadata(file_path=Path("batch.txt")),
+            freq_hz=np.array([1000.0, 100.0, 10.0, 1.0]),
+            z_real_ohm=np.array([1.0, 2.0, 3.0, 4.0]),
+            z_imag_ohm=np.array([-0.1, -0.2, -0.3, -0.4]),
+            z_mod_ohm=np.array([1.0, 2.0, 3.0, 4.0]),
+            phase_deg=np.array([-5.0, -6.0, -7.0, -8.0]),
+        )
+        hint = SegmentDetection(requested_mode="single", resolved_mode="single", peak_indices=(1,), split_indices=(2,))
+        first = FitOutcome(
+            model_key="zview_segmented_rq_rwo",
+            model_label="single",
+            status="warn",
+            message="mode=single",
+            fallback_from="zview_segmented_rq_rwo",
+        )
+        second = FitOutcome(
+            model_key="zview_segmented_rq_rwo",
+            model_label="single",
+            status="ok",
+            message="mode=single",
+            parameters={"Rct": 5.0},
+        )
+        guide = DrtGuide(rs=0.5, peaks=({"R": 5.0, "tau": 1.0, "n": 0.8},))
+        cache: dict[str, DrtGuide | None] = {}
+        with patch("eismaster.analysis.batch.fit_spectrum", side_effect=[first, second, first, second]) as fit_mock:
+            with patch("eismaster.analysis.batch.build_drt_guide", return_value=guide) as guide_mock:
+                _fit_single_safe(spectrum, "zview_segmented_rq_rwo", hint, drt_cache=cache)
+                _fit_single_safe(spectrum, "zview_double_rq_qrwo", hint, drt_cache=cache)
+        self.assertEqual(guide_mock.call_count, 1)
+        self.assertEqual(fit_mock.call_count, 4)
 
 
 if __name__ == "__main__":

@@ -95,9 +95,9 @@ def _solve_drt_system(a_w: np.ndarray, b_w: np.ndarray, d1: np.ndarray, lambda_r
 
 def _choose_lambda_lcurve(a_w: np.ndarray, b_w: np.ndarray, d1: np.ndarray, mode: str = "fast") -> float:
     if mode == "high_precision":
-        grid = np.logspace(-6, 0, 25)
+        grid = np.logspace(-6, 0, 40)
     else:
-        grid = np.logspace(-6, 0, 13)
+        grid = np.logspace(-6, 0, 20)
 
     residual_norms: list[float] = []
     smooth_norms: list[float] = []
@@ -169,7 +169,11 @@ def _cole_cole_fwhm_decades(n_value: float) -> float:
 
 
 def _solve_cpe_n_from_fwhm(fwhm_decades: float) -> float:
-    candidates = np.linspace(0.4, 1.0, 600)
-    widths = np.asarray([_cole_cole_fwhm_decades(float(n)) for n in candidates])
-    idx = int(np.argmin(np.abs(widths - fwhm_decades)))
-    return float(candidates[idx])
+    fwhm_decades = float(np.clip(fwhm_decades, _cole_cole_fwhm_decades(0.4), _cole_cole_fwhm_decades(1.0)))
+    try:
+        return float(optimize.brentq(lambda n: _cole_cole_fwhm_decades(float(n)) - fwhm_decades, 0.4, 1.0))
+    except Exception:
+        candidates = np.linspace(0.4, 1.0, 200)
+        widths = np.asarray([_cole_cole_fwhm_decades(float(n)) for n in candidates])
+        idx = int(np.argmin(np.abs(widths - fwhm_decades)))
+        return float(candidates[idx])

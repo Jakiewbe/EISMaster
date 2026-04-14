@@ -13,7 +13,6 @@ from typing import Optional
 from dataclasses import dataclass
 
 import numpy as np
-
 from eismaster.analysis.segmentation import SegmentDetection
 from eismaster.models import FitOutcome, SpectrumData
 
