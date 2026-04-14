@@ -58,22 +58,24 @@ python -m eismaster
 
 ## Equivalent Circuit Models
 
-### Single-arc: `R(Q(RWo))`
+### Single-arc: `R(Q(RWo))` — Randles circuit
 
 ```
-Rs ── CPE ──┬── Rct ── Wo ──┬──
-            │               │
-            └───────────────┘
+      +--- CPE ------+
+Rs ---+              +---
+      +--- Rct - Zw -+
 ```
 
 **Parameters**: `Rs`, `CPE_T`, `CPE_P`, `Rct`, `Wo_R`, `Wo_T`, `Wo_P`
 
-### Double-arc: `R(QR)(Q(RWo))`
+### Double-arc: `R(QR)(Q(RWo))` — Dual-arc lithium-ion circuit
 
 ```
-Rs ── CPE1 ──┬── Rsei ──┬── CPE2 ──┬── Rct ── Wo ──┬──
-             │         │          │               │
-             └─────────┘          └───────────────┘
+      +--- R_sei ----+   +--- R_ct ---- Zw ----+
+Rs ---+              +---+                      +---
+      +--- CPE_f ----+   +--- CPE_dl -----------+
+    |  High-frequency  |   |  Mid/Low-frequency   |
+    |  Surface film    |   |  Charge transfer     |
 ```
 
 **Parameters**: `Rs`, `Q1`, `n1`, `Rsei`, `Q2`, `n2`, `Rct`, `Wo_R`, `Wo_T`, `Wo_P`
