@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import numpy as np
+import time
 from eismaster.analysis.batch import analyze_batch_auto
 from eismaster.analysis.circuits import TEMPLATES
 from eismaster.analysis.fitting import fit_spectrum
@@ -135,6 +136,7 @@ class MainWindow(MSFluentWindow):
         self._matlab_worker: MatlabDrtWorker | None = None
         self._batch_thread: QThread | None = None
         self._batch_worker: BatchFitWorker | None = None
+        self._last_batch_progress_time: float = 0.0
         self._last_matlab_result: MatlabDrtResult | None = None
         self._last_drt_spectra: list[SpectrumData] = []
         self._queue_tables: dict[str, TableWidget] = {}
@@ -149,7 +151,7 @@ class MainWindow(MSFluentWindow):
         # 1. UI Initialization Settings
         setTheme(Theme.DARK)
         self.setMicaEffectEnabled(True)
-        self.setWindowTitle("EISMaster ???????")
+        self.setWindowTitle("EISMaster 谱图分析工具")
         self.setMinimumSize(1200, 780)
         self.resize(1500, 960)
         # 2. Main Page Setup
@@ -168,9 +170,9 @@ class MainWindow(MSFluentWindow):
         self.fit_widget.setObjectName("fitInterface")
         self.batch_widget.setObjectName("batchInterface")
         # Register interfaces to MSFluentWindow sidebar
-        self.addSubInterface(self.inspect_widget, FIF.TAG, "????")
-        self.addSubInterface(self.fit_widget, FIF.SETTING, "????")
-        self.addSubInterface(self.batch_widget, FIF.UPDATE, "?????")
+        self.addSubInterface(self.inspect_widget, FIF.TAG, "谱图")
+        self.addSubInterface(self.fit_widget, FIF.SETTING, "拟合")
+        self.addSubInterface(self.batch_widget, FIF.UPDATE, "批量拟合")
         # Connect navigation signal to refresh content
         self.stackedWidget.currentChanged.connect(self._on_tab_changed)
     def _build_header(self) -> QWidget:
@@ -179,12 +181,12 @@ class MainWindow(MSFluentWindow):
         layout.setContentsMargins(20, 15, 20, 15)
         left = QVBoxLayout()
         self.brand_label = TitleLabel("EISMaster Pro")
-        self.subtitle_label = CaptionLabel("?????????????????????? DRT ???")
+        self.subtitle_label = CaptionLabel("电化学阻抗谱分析 · 支持等效电路拟合、批量处理、DRT分析")
         left.addWidget(self.brand_label)
         left.addWidget(self.subtitle_label)
         info_row = QHBoxLayout()
-        self.instrument_chip = StrongBodyLabel("??: ????")
-        self.selection_chip = BodyLabel("??: ???")
+        self.instrument_chip = StrongBodyLabel("仪器: 等待导入")
+        self.selection_chip = BodyLabel("样品: 未选择")
         info_row.addWidget(self.instrument_chip)
         info_row.addSpacing(20)
         info_row.addWidget(self.selection_chip)
@@ -192,8 +194,8 @@ class MainWindow(MSFluentWindow):
         left.addLayout(info_row)
         layout.addLayout(left, 1)
         metrics = QHBoxLayout()
-        self.loaded_metric = self._metric("?????", "0")
-        self.fit_metric = self._metric("????", "???")
+        self.loaded_metric = self._metric("已加载谱图", "0")
+        self.fit_metric = self._metric("拟合状态", "待拟合")
         metrics.addWidget(self.loaded_metric["container"])
         metrics.addWidget(self.fit_metric["container"])
         layout.addLayout(metrics, 0)
@@ -203,7 +205,7 @@ class MainWindow(MSFluentWindow):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
-        title = StrongBodyLabel("????")
+        title = StrongBodyLabel("导入/删除")
         layout.addWidget(title)
         import_files_btn = None
         import_folder_btn = None
@@ -211,9 +213,9 @@ class MainWindow(MSFluentWindow):
         clear_all_btn = None
         if page_key == "inspect":
             btn_layout = QHBoxLayout()
-            import_files_btn = PrimaryPushButton(FIF.FOLDER, "????")
+            import_files_btn = PrimaryPushButton(FIF.FOLDER, "导入文件")
             import_files_btn.clicked.connect(self._import_files)
-            import_folder_btn = PushButton(FIF.FOLDER_ADD, "?????")
+            import_folder_btn = PushButton(FIF.FOLDER_ADD, "导入文件夹")
             import_folder_btn.clicked.connect(self._import_folder)
             btn_layout.addWidget(import_files_btn)
             btn_layout.addWidget(import_folder_btn)
@@ -229,15 +231,15 @@ class MainWindow(MSFluentWindow):
         layout.addWidget(table, 1)
         if page_key == "inspect":
             ctrl_layout = QHBoxLayout()
-            self.move_up_btn = PushButton(FIF.UP, "??")
+            self.move_up_btn = PushButton(FIF.UP, "上移")
             self.move_up_btn.clicked.connect(self._move_current_spectrum_up)
-            self.move_down_btn = PushButton(FIF.DOWN, "??")
+            self.move_down_btn = PushButton(FIF.DOWN, "下移")
             self.move_down_btn.clicked.connect(self._move_current_spectrum_down)
-            remove_btn = PushButton(FIF.DELETE, "??")
+            remove_btn = PushButton(FIF.DELETE, "删除")
             remove_btn.clicked.connect(self._remove_current_spectrum)
             ctrl_layout.addWidget(self.move_up_btn)
             ctrl_layout.addWidget(self.move_down_btn)
-            clear_all_btn = PushButton(FIF.CLEAR_SELECTION, "????")
+            clear_all_btn = PushButton(FIF.CLEAR_SELECTION, "清空全部")
             clear_all_btn.clicked.connect(self._clear_all_spectra)
             ctrl_layout.addStretch(1)
             ctrl_layout.addWidget(clear_all_btn)
@@ -267,24 +269,24 @@ class MainWindow(MSFluentWindow):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(self._build_sidebar("inspect"), 1)
         split.addWidget(left_container)
-        right_panel = self._panel("????", "?? Nyquist ? Bode ????????????????????")
+        right_panel = self._panel("可视化", "展示 Nyquist 图和 Bode 图，查看原始数据和质量检查报告")
         right_layout = right_panel.layout()
         grid = QGridLayout()
         grid.setSpacing(10)
-        self.nyquist_plot = self._plot("Nyquist ?", "Z' [ohm]", "-Z'' [ohm]")
-        self.bode_mag_plot = self._plot("Bode ??", "?? [Hz]", "|Z| [ohm]", log_x=True, log_y=True)
-        self.bode_phase_plot = self._plot("Bode ??", "?? [Hz]", "?? [deg]", log_x=True)
+        self.nyquist_plot = self._plot("Nyquist 图", "Z' [ohm]", "-Z'' [ohm]")
+        self.bode_mag_plot = self._plot("Bode 幅频图", "频率 [Hz]", "|Z| [ohm]", log_x=True, log_y=True)
+        self.bode_phase_plot = self._plot("Bode 相位图", "频率 [Hz]", "相位 [deg]", log_x=True)
         grid.addWidget(self.nyquist_plot, 0, 0, 2, 1)
         grid.addWidget(self.bode_mag_plot, 0, 1)
         grid.addWidget(self.bode_phase_plot, 1, 1)
         right_layout.addLayout(grid, 5)
         self.quality_text = self._info_box()
-        self.quality_text.setPlaceholderText("?????????????")
+        self.quality_text.setPlaceholderText("质量检查摘要将显示在这里")
         right_layout.addWidget(self.quality_text, 1)
         split.addWidget(right_panel)
         split.setSizes([350, 1000])
         layout.addWidget(split, 1)
-        table_panel = self._panel("????", "????????????????????????")
+        table_panel = self._panel("数据表格", "已加载谱图的详细数据列表")
         self.data_table = self._table()
         table_panel.layout().addWidget(self.data_table)
         layout.addWidget(table_panel, 1)
@@ -292,18 +294,18 @@ class MainWindow(MSFluentWindow):
     def _build_fit_tab(self) -> tuple[QWidget, QVBoxLayout]:
         tab, layout = self._tab_shell()
         layout.setContentsMargins(20, 20, 20, 20)
-        top = self._panel("????", "????????????????? DRT ???")
+        top = self._panel("拟合工具", "选择等效电路模板进行拟合，也可运行 MATLAB DRT 分析")
         top_layout = top.layout()
         row = QHBoxLayout()
-        row.addWidget(StrongBodyLabel("????"))
+        row.addWidget(StrongBodyLabel("电路模板"))
         self.template_combo = ComboBox()
         for key, template in TEMPLATES.items():
             self.template_combo.addItem(template.label, userData=key)
         self.template_combo.currentIndexChanged.connect(self._refresh_fit_for_current_selection)
         row.addWidget(self.template_combo, 1)
-        self.fit_current_btn = PrimaryPushButton(FIF.PLAY, "????")
+        self.fit_current_btn = PrimaryPushButton(FIF.PLAY, "开始拟合")
         self.fit_current_btn.clicked.connect(self._fit_current)
-        self.export_current_btn = PushButton(FIF.SHARE, "????")
+        self.export_current_btn = PushButton(FIF.SHARE, "导出数据")
         self.export_current_btn.clicked.connect(self._export_current_bundle)
         self.run_drt_current_btn = PushButton(FIF.BASKETBALL, "MATLAB DRT")
         self.run_drt_current_btn.clicked.connect(self._run_matlab_drt_current)
@@ -312,45 +314,45 @@ class MainWindow(MSFluentWindow):
         row.addWidget(self.run_drt_current_btn)
         top_layout.addLayout(row)
         layout.addWidget(top)
-        segment_panel = self._panel("???? (ZView)", "????????????????????")
+        segment_panel = self._panel("分段设置 (ZView)", "可设置单弧或双弧拟合的分段点")
         segment_layout = QVBoxLayout()
         self.segment_mode_combo = ComboBox()
-        self.segment_mode_combo.addItem("??", userData="auto")
-        self.segment_mode_combo.addItem("??", userData="single")
-        self.segment_mode_combo.addItem("??", userData="double")
+        self.segment_mode_combo.addItem("自动", userData="auto")
+        self.segment_mode_combo.addItem("单弧", userData="single")
+        self.segment_mode_combo.addItem("双弧", userData="double")
         self.segment_mode_combo.currentIndexChanged.connect(self._refresh_fit_for_current_selection)
         self.segment_split1_spin = LineEdit()
-        self.segment_split1_spin.setPlaceholderText("??? 1")
+        self.segment_split1_spin.setPlaceholderText("分界点 1")
         self.segment_split1_spin.setFixedWidth(80)
         self.segment_split2_spin = LineEdit()
-        self.segment_split2_spin.setPlaceholderText("??? 2")
+        self.segment_split2_spin.setPlaceholderText("分界点 2")
         self.segment_split2_spin.setFixedWidth(80)
-        self.segment_detect_btn = PushButton(FIF.SEARCH, "????")
+        self.segment_detect_btn = PushButton(FIF.SEARCH, "自动检测")
         self.segment_detect_btn.clicked.connect(self._detect_segments_for_current)
-        segment_layout.addWidget(BodyLabel("??:"))
+        segment_layout.addWidget(BodyLabel("频率范围:"))
         segment_top = QHBoxLayout()
         segment_layout.addLayout(segment_top)
-        segment_top.addWidget(BodyLabel("??:"))
+        segment_top.addWidget(BodyLabel("模式:"))
         segment_top.addWidget(self.segment_mode_combo)
         segment_top.addStretch(1)
-        segment_layout.addWidget(BodyLabel("???:"))
+        segment_layout.addWidget(BodyLabel("分界点设置:"))
         segment_grid = QGridLayout()
         segment_grid.setHorizontalSpacing(10)
         segment_grid.setVerticalSpacing(8)
-        self.segment_split1_freq_label = BodyLabel("??? 1 ?? [Hz]")
+        self.segment_split1_freq_label = BodyLabel("分界点 1 频率 [Hz]")
         self.segment_split1_freq_edit = LineEdit()
-        self.segment_split1_freq_edit.setPlaceholderText("??? 1 ?? [Hz]")
+        self.segment_split1_freq_edit.setPlaceholderText("分界点 1 频率 [Hz]")
         self.segment_split1_freq_edit.setFixedWidth(150)
         self.segment_split1_freq_edit.editingFinished.connect(lambda: self._on_segment_frequency_edited("split1"))
-        self.segment_split1_index_label = CaptionLabel("??")
+        self.segment_split1_index_label = CaptionLabel("索引")
         self.segment_split1_spin.setReadOnly(True)
         self.segment_split1_spin.setFixedWidth(72)
-        self.segment_split2_freq_label = BodyLabel("??? 2 ?? [Hz]")
+        self.segment_split2_freq_label = BodyLabel("分界点 2 频率 [Hz]")
         self.segment_split2_freq_edit = LineEdit()
-        self.segment_split2_freq_edit.setPlaceholderText("??? 2 ?? [Hz]")
+        self.segment_split2_freq_edit.setPlaceholderText("分界点 2 频率 [Hz]")
         self.segment_split2_freq_edit.setFixedWidth(150)
         self.segment_split2_freq_edit.editingFinished.connect(lambda: self._on_segment_frequency_edited("split2"))
-        self.segment_split2_index_label = CaptionLabel("??")
+        self.segment_split2_index_label = CaptionLabel("索引")
         self.segment_split2_spin.setReadOnly(True)
         self.segment_split2_spin.setFixedWidth(72)
         segment_grid.addWidget(self.segment_split1_freq_label, 0, 0)
@@ -369,11 +371,11 @@ class MainWindow(MSFluentWindow):
             self.segment_split2_index_label,
             self.segment_split2_spin,
         ]
-        self.segment_mode_status = CaptionLabel("????: ????")
-        self.segment_peak_info_label = CaptionLabel("??: -")
-        self.segment_arc1_label = CaptionLabel("?? 1: -")
-        self.segment_arc2_label = CaptionLabel("?? 2: -")
-        self.segment_tail_label = CaptionLabel("??: -")
+        self.segment_mode_status = CaptionLabel("分段模式: 自动")
+        self.segment_peak_info_label = CaptionLabel("峰值: -")
+        self.segment_arc1_label = CaptionLabel("弧 1: -")
+        self.segment_arc2_label = CaptionLabel("弧 2: -")
+        self.segment_tail_label = CaptionLabel("尾部: -")
         segment_layout.addWidget(self.segment_mode_status)
         segment_layout.addWidget(self.segment_peak_info_label)
         segment_layout.addWidget(self.segment_arc1_label)
@@ -385,14 +387,14 @@ class MainWindow(MSFluentWindow):
         split.setChildrenCollapsible(False)
         split.addWidget(self._build_sidebar("fit"))
         self.param_table = self._table()
-        result_panel = self._panel("????", "???????????????????????")
+        result_panel = self._panel("拟合结果", "显示拟合参数、误差分析和拟合统计信息")
         self.fit_text = self._info_box()
         result_panel.layout().addWidget(self.fit_text, 1)
         split.addWidget(result_panel)
-        plot_panel = self._panel("????", "?? Nyquist ?????????")
+        plot_panel = self._panel("拟合曲线图", "展示 Nyquist 图和拟合曲线的对比")
         plot_layout = QVBoxLayout()
-        self.fit_nyquist_plot = self._plot("Nyquist ??", "Z' [ohm]", "-Z'' [ohm]")
-        self.fit_residual_plot = self._plot("?? [%]", "?? [Hz]", "??", log_x=True)
+        self.fit_nyquist_plot = self._plot("Nyquist 拟合", "Z' [ohm]", "-Z'' [ohm]")
+        self.fit_residual_plot = self._plot("残差 [%]", "频率 [Hz]", "残差", log_x=True)
         plot_layout.addWidget(self.fit_nyquist_plot, 3)
         plot_layout.addWidget(self.fit_residual_plot, 1)
         plot_panel.layout().addLayout(plot_layout)
@@ -400,44 +402,44 @@ class MainWindow(MSFluentWindow):
         split.setSizes([320, 320, 900])
         layout.addWidget(split, 1)
         batch_actions = QHBoxLayout()
-        self.fit_batch_btn = PrimaryPushButton(FIF.PLAY, "?????")
+        self.fit_batch_btn = PrimaryPushButton(FIF.PLAY, "批量拟合")
         self.fit_batch_btn.clicked.connect(self._fit_batch)
-        self.export_current_btn = PushButton(FIF.SHARE, "??????")
+        self.export_current_btn = PushButton(FIF.SHARE, "导出当前数据")
         self.export_current_btn.clicked.connect(self._export_current_bundle)
         batch_actions.addWidget(self.fit_batch_btn)
         batch_actions.addWidget(self.export_current_btn)
         batch_actions.addStretch(1)
-        batch_footer = self._panel("?????", "???????????????????????")
+        batch_footer = self._panel("批量操作", "批量拟合进度控制和操作按钮")
         batch_footer.layout().addLayout(batch_actions)
         layout.addWidget(batch_footer)
         return tab, layout
     def _build_batch_tab(self) -> tuple[QWidget, QVBoxLayout]:
         tab, layout = self._tab_shell()
         layout.setContentsMargins(20, 20, 20, 20)
-        batch_top_panel = self._panel("?????", "????????????????????")
+        batch_top_panel = self._panel("批量拟合", "批量拟合进度控制和统计分析")
         batch_top_layout = batch_top_panel.layout()
         action_layout = QHBoxLayout()
-        self.export_batch_btn = PushButton(FIF.SHARE, "??????")
+        self.export_batch_btn = PushButton(FIF.SHARE, "导出批量数据")
         self.export_batch_btn.clicked.connect(self._export_batch_bundle)
-        self.run_drt_batch_btn = PushButton(FIF.BASKETBALL, "?? MATLAB DRT")
+        self.run_drt_batch_btn = PushButton(FIF.BASKETBALL, "运行 MATLAB DRT")
         self.run_drt_batch_btn.clicked.connect(self._run_matlab_drt_batch)
         action_layout.addWidget(self.fit_batch_btn)
         action_layout.addWidget(self.export_batch_btn)
         action_layout.addWidget(self.run_drt_batch_btn)
         action_layout.addStretch(1)
         batch_top_layout.addLayout(action_layout)
-        self.batch_progress_label = BodyLabel("?????????")
+        self.batch_progress_label = BodyLabel("尚未开始批量拟合。")
         self.batch_progress = ProgressBar()
         self.batch_progress.setValue(0)
         batch_top_layout.addWidget(self.batch_progress_label)
         batch_top_layout.addWidget(self.batch_progress)
         layout.addWidget(batch_top_panel)
-        summary_panel = self._panel("????", "??????????????????????")
+        summary_panel = self._panel("批量摘要", "批量拟合的整体结果摘要")
         self.batch_text = self._info_box()
         self.batch_text.setMaximumHeight(64)
         batch_top_layout.addWidget(self.batch_text)
         batch_top_panel.setMaximumHeight(190)
-        top = self._panel("????", "????????????????????")
+        top = self._panel("趋势分析", "批量拟合参数随样品的变化趋势")
         summary_split = QSplitter(Qt.Horizontal)
         summary_split.setChildrenCollapsible(False)
         summary_split.addWidget(self._build_sidebar("batch"))
@@ -457,18 +459,18 @@ class MainWindow(MSFluentWindow):
         trend_cfg.addWidget(self.trend_rsei_check)
         trend_cfg.addWidget(self.trend_rct_check)
         trend_layout.addLayout(trend_cfg)
-        self.batch_plot = self._plot("????", "??", "?? [ohm]")
+        self.batch_plot = self._plot("参数趋势", "样品序号", "阻值 [ohm]")
         trend_layout.addWidget(self.batch_plot)
         summary_split.addWidget(trend_container)
         summary_split.setSizes([320, 900])
         top.layout().addWidget(summary_split)
         layout.addWidget(top)
-        table_panel = self._panel("????", "????????????????????")
+        table_panel = self._panel("批量结果", "每个谱图的拟合结果摘要")
         self.batch_table = self._table()
         self.batch_table.itemSelectionChanged.connect(self._on_batch_table_selection_changed)
         table_panel.layout().addWidget(self.batch_table)
         layout.addWidget(table_panel, 1)
-        matlab_panel = self._panel("MATLAB DRT ??", "???? Tikhonov ???? MATLAB DRT ?????")
+        matlab_panel = self._panel("MATLAB DRT 配置", "配置 Tikhonov 正则化参数，运行 MATLAB DRT 分析")
         grid = QGridLayout()
         defaults = MatlabDrtConfig()
         self.matlab_exe_edit = LineEdit()
@@ -480,33 +482,33 @@ class MainWindow(MSFluentWindow):
         self.matlab_coeff_edit = LineEdit()
         self.matlab_coeff_edit.setText(f"{defaults.coeff_value:.6g}")
         self.matlab_method_combo = ComboBox()
-        for label, key in [("???", "simple"), ("????", "credit"), ("BHT", "BHT"), ("???", "peak")]:
+        for label, key in [("标准法", "simple"), ("留一交叉验证", "credit"), ("BHT", "BHT"), ("峰识别", "peak")]:
             self.matlab_method_combo.addItem(label, userData=key)
         self.matlab_drt_type_combo = ComboBox()
         for label, value in [("tau / gamma", 1), ("freq / gamma", 2), ("tau / g", 3), ("freq / g", 4)]:
             self.matlab_drt_type_combo.addItem(label, userData=value)
         self.matlab_inductance_combo = ComboBox()
-        for label, value in [("??", 1), ("??", 2), ("??", 3)]:
+        for label, value in [("保留电感", 1), ("忽略电感", 2), ("去除电感", 3)]:
             self.matlab_inductance_combo.addItem(label, userData=value)
-        matlab_exe_browse = PushButton(FIF.FOLDER, "??")
+        matlab_exe_browse = PushButton(FIF.FOLDER, "浏览")
         matlab_exe_browse.clicked.connect(self._browse_matlab_exe)
-        drttools_browse = PushButton(FIF.FOLDER, "??")
+        drttools_browse = PushButton(FIF.FOLDER, "浏览")
         drttools_browse.clicked.connect(self._browse_drttools_dir)
-        grid.addWidget(BodyLabel("MATLAB ?????"), 0, 0)
+        grid.addWidget(BodyLabel("MATLAB 可执行文件"), 0, 0)
         grid.addWidget(self.matlab_exe_edit, 0, 1)
         grid.addWidget(matlab_exe_browse, 0, 2)
-        grid.addWidget(BodyLabel("DRTtools ??"), 1, 0)
+        grid.addWidget(BodyLabel("DRTtools 目录"), 1, 0)
         grid.addWidget(self.drttools_dir_edit, 1, 1)
         grid.addWidget(drttools_browse, 1, 2)
-        grid.addWidget(BodyLabel("????"), 2, 0)
+        grid.addWidget(BodyLabel("正则化方法"), 2, 0)
         grid.addWidget(self.matlab_method_combo, 2, 1)
-        grid.addWidget(BodyLabel("DRT ??"), 3, 0)
+        grid.addWidget(BodyLabel("DRT 类型"), 3, 0)
         grid.addWidget(self.matlab_drt_type_combo, 3, 1)
         grid.addWidget(BodyLabel("Lambda"), 4, 0)
         grid.addWidget(self.matlab_lambda_edit, 4, 1)
         grid.addWidget(BodyLabel("Coeff"), 5, 0)
         grid.addWidget(self.matlab_coeff_edit, 5, 1)
-        grid.addWidget(BodyLabel("????"), 6, 0)
+        grid.addWidget(BodyLabel("电感处理方式"), 6, 0)
         grid.addWidget(self.matlab_inductance_combo, 6, 1)
         matlab_panel.layout().addLayout(grid)
         self.matlab_status = self._info_box()
@@ -591,7 +593,7 @@ class MainWindow(MSFluentWindow):
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         return table
     def _import_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "氓炉录氓\n楼 EIS 忙聳聡盲禄露", str(Path.cwd()), "EIS Files (*.bin *.txt *.csv)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择文件\n选择 EIS 数据文件", str(Path.cwd()), "EIS Files (*.bin *.txt *.csv)")
         if not paths:
             return
         spectra: list[SpectrumData] = []
@@ -666,8 +668,8 @@ class MainWindow(MSFluentWindow):
         self.loaded_metric["value"].setText(str(count))
         if count == 0:
             self.brand_label.setText("EISMaster Pro")
-            self.selection_chip.setText("鏍峰搧: 鏈€夋嫨")
-            self.instrument_chip.setText("浠櫒: 绛夊緟瀵煎叆")
+            self.selection_chip.setText("样品: 未选择")
+            self.instrument_chip.setText("仪器: 等待导入")
         else:
             current = self._current_spectrum(silent=True) or self.state.spectra[0]
             self.brand_label.setText(f"EISMaster Pro - {current.display_name}")
@@ -778,14 +780,14 @@ class MainWindow(MSFluentWindow):
         self._update_global_status()
     def _update_global_status(self) -> None:
         if not self.state.spectra:
-            self.instrument_chip.setText("浠櫒: 绛夊緟瀵煎叆")
-            self.selection_chip.setText("鏍峰搧: 鏈€夋嫨")
+            self.instrument_chip.setText("仪器: 等待导入")
+            self.selection_chip.setText("样品: 未选择")
             return
         current = self._current_spectrum(silent=True)
         self.loaded_metric["value"].setText(str(len(self.state.spectra)))
         if current:
-            self.instrument_chip.setText(f"浠櫒: {current.metadata.instrument_model or '-'}")
-            self.selection_chip.setText(f"褰撳墠: {current.display_name}")
+            self.instrument_chip.setText(f"仪器: {current.metadata.instrument_model or '-'}")
+            self.selection_chip.setText(f"当前: {current.display_name}")
             self.brand_label.setText(f"EISMaster Pro - {current.display_name}")
         else:
             self.selection_chip.setText("样品: 未选择")
@@ -815,7 +817,7 @@ class MainWindow(MSFluentWindow):
                 return f"批量完成 {done}/{total}，含失败项目"
             if warned:
                 return f"批量完成 {done}/{total}，含警告项目"
-            return f"鎵归噺瀹屾垚 {done}/{total}"
+            return f"批量完成 {done}/{total}"
         return "等待中"
     def _latest_fit_for_spectrum(self, display_name: str) -> FitOutcome | None:
         preferred_key = str(self.template_combo.currentData()) if hasattr(self, "template_combo") else None
@@ -855,16 +857,16 @@ class MainWindow(MSFluentWindow):
             self._refresh_batch_view()
     def _refresh_sidebar(self, spectrum: SpectrumData, quality: QualityReport) -> None:
         lines = [
-            f"鏂囦欢: {spectrum.metadata.file_path.name}",
-            f"鏍煎紡: {spectrum.metadata.source_format.upper()} - {spectrum.n_points} pt",
-            f"閲囬泦: {spectrum.acquired_label}",
-            f"璐ㄩ噺: {quality.status}",
+            f"文件: {spectrum.metadata.file_path.name}",
+            f"格式: {spectrum.metadata.source_format.upper()} - {spectrum.n_points} pt",
+            f"采集: {spectrum.acquired_label}",
+            f"质量: {quality.status}",
         ]
         text = "\n".join(lines)
         for meta_box in self._queue_meta_boxes.values():
             meta_box.setPlainText(text)
     def _refresh_inspect_view(self, spectrum: SpectrumData, quality: QualityReport) -> None:
-        lines = [f"鏁版嵁妫€鏌ョ姸鎬? {quality.status.upper()}", f"鐐规暟: {spectrum.n_points}"]
+        lines = [f"数据检查状态: {quality.status.upper()}", f"点数: {spectrum.n_points}"]
         lines.append("-" * 20)
         lines.extend(quality.summary_lines())
         self.quality_text.setPlainText("\n".join(lines))
@@ -902,7 +904,7 @@ class MainWindow(MSFluentWindow):
             quality = assess_spectrum_quality(spectrum, run_kk=True)
         except Exception as exc:
             QApplication.restoreOverrideCursor()
-            self._warn(f"KK ??????: {exc}")
+            self._warn(f"KK 变换失败: {exc}")
             return
         QApplication.restoreOverrideCursor()
         self.state.qualities[spectrum.display_name] = quality
@@ -1467,7 +1469,7 @@ class MainWindow(MSFluentWindow):
     def _toggle_fit_detail(self) -> None:
         visible = not self.fit_detail_text.isVisible()
         self.fit_detail_text.setVisible(visible)
-        self.fit_detail_btn.setText("????" if visible else "????")
+        self.fit_detail_btn.setText("详情" if visible else "详情")
     def _fit_current(self) -> None:
         spectrum = self._current_spectrum()
         if spectrum is None:
@@ -1492,7 +1494,7 @@ class MainWindow(MSFluentWindow):
         self.state.batch_summary = None
         self._refresh_batch_view()
         self.batch_progress.setValue(0)
-        self.batch_progress_label.setText(f"鍑嗗鎵归噺浠诲姟 0 / {len(self.state.spectra)}")
+        self.batch_progress_label.setText(f"准备批量任务 0 / {len(self.state.spectra)}")
         self._set_batch_busy(True)
         self._batch_thread = QThread(self)
         self._batch_worker = BatchFitWorker(list(self.state.spectra))
@@ -1545,10 +1547,10 @@ class MainWindow(MSFluentWindow):
             stats = fit.statistics if fit is not None else {}
             msg = ""
             if fit and fit.message:
-                diag_pos = fit.message.find("[猫炉聤忙聳颅:")
+                diag_pos = fit.message.find("[诊断分析:")
                 msg = fit.message[:diag_pos].strip().rstrip(";").strip() if diag_pos >= 0 else fit.message
                 msg = msg.split(";", 1)[0]
-            fallback_label = "鍥為€€妯℃澘" if fit and fit.fallback_from else ""
+            fallback_label = "回退模板" if fit and fit.fallback_from else ""
             preprocess_label = "; ".join(fit.preprocess_actions) if fit and fit.preprocess_actions else ""
             row = [
                 str(index), item.spectrum.display_name, fit.model_label if fit else "-",
@@ -1667,7 +1669,7 @@ class MainWindow(MSFluentWindow):
             self.batch_table.selectRow(row_index)
             self.batch_table.scrollToItem(self.batch_table.item(row_index, 0))
             self.batch_progress_label.setText(
-                f"宸查€夋嫨鐐?{clicked_x}: {item.spectrum.display_name}"
+                f"已选择点 {clicked_x}: {item.spectrum.display_name}"
             )
     def _on_batch_table_selection_changed(self) -> None:
         if self.state.batch_summary is None:
@@ -1713,16 +1715,21 @@ class MainWindow(MSFluentWindow):
             self._update_global_status()
 
     def _on_batch_progress(self, index: int, total: int, display_name: str) -> None:
+        # Throttle progress updates to avoid flooding the main thread
+        now = time.monotonic()
+        if now - self._last_batch_progress_time < 0.1:
+            return
+        self._last_batch_progress_time = now
         percent = int(index * 100 / max(total, 1))
         self.batch_progress.setValue(percent)
-        self.batch_progress_label.setText(f"澶勭悊涓?{index} / {total}: {display_name}")
+        self.batch_progress_label.setText(f"处理中 {index} / {total}: {display_name}")
 
     def _on_batch_finished(self, summary: BatchSummary | None, error: Exception | None) -> None:
         self._set_batch_busy(False)
         if error is not None:
             self.batch_progress.setValue(0)
-            self.batch_progress_label.setText("鎵归噺鎷熷悎澶辫触")
-            self._warn(f"鎵归噺鎷熷悎澶辫触: {error}")
+            self.batch_progress_label.setText("批量拟合失败")
+            self._warn(f"批量拟合失败: {error}")
         elif summary is not None:
             self.state.batch_summary = summary
             for item in summary.items:
@@ -1730,7 +1737,7 @@ class MainWindow(MSFluentWindow):
                 if item.fit is not None:
                     self.state.fits[(item.spectrum.display_name, item.fit.model_key)] = item.fit
             self.batch_progress.setValue(100)
-            self.batch_progress_label.setText(f"鎵归噺鎷熷悎瀹屾垚: {len(summary.items)} / {len(summary.items)}")
+            self.batch_progress_label.setText(f"批量拟合完成: {len(summary.items)} / {len(summary.items)}")
             self._refresh_batch_view()
         self._update_global_status()
         self._batch_worker = None
@@ -1749,18 +1756,18 @@ class MainWindow(MSFluentWindow):
             self._update_global_status()
     def _start_matlab_drt(self, spectra: list[SpectrumData], export_dir: Path) -> None:
         if self.state.drt_busy:
-            self._warn("MATLAB DRT ???????????????")
+            self._warn("MATLAB DRT 配置不完整，请先配置 MATLAB 和 DRTtools 路径")
             return
         try:
             config = self._current_matlab_drt_config()
         except ValueError as exc:
-            self._warn(f"MATLAB DRT ????: {exc}")
+            self._warn(f"MATLAB DRT 失败: {exc}")
             return
         self._last_drt_spectra = list(spectra)
         self.matlab_status.setPlainText(
-            f"?????\n????: {len(spectra)}\n????: {export_dir / 'results'}"
+            f"已准备 DRT 输入\n谱图数: {len(spectra)}\n输出目录: {export_dir / 'results'}"
         )
-        self.matlab_log.setPlainText("MATLAB DRT ?????????????????")
+        self.matlab_log.setPlainText("MATLAB DRT 已在后台运行，请等待完成")
         self._set_drt_busy(True)
         self._matlab_thread = QThread(self)
         self._matlab_worker = MatlabDrtWorker(config, spectra, export_dir)
@@ -1774,9 +1781,9 @@ class MainWindow(MSFluentWindow):
     def _on_matlab_drt_finished(self, result: MatlabDrtResult | None, error: Exception | None) -> None:
         self._set_drt_busy(False)
         if error is not None:
-            self.fit_metric["value"].setText("DRT ??")
-            self.matlab_log.setPlainText(f"MATLAB DRT ????:\n{error}")
-            self._warn(f"MATLAB DRT ????: {error}")
+            self.fit_metric["value"].setText("DRT 完成")
+            self.matlab_log.setPlainText(f"MATLAB DRT 失败:\n{error}")
+            self._warn(f"MATLAB DRT 失败: {error}")
         else:
             self._show_matlab_drt_result(result)
         self._matlab_worker = None
@@ -1785,14 +1792,14 @@ class MainWindow(MSFluentWindow):
         spectrum = self._current_spectrum()
         if spectrum is None:
             return
-        folder = QFileDialog.getExistingDirectory(self, "?? MATLAB DRT ????", str(Path.cwd()))
+        folder = QFileDialog.getExistingDirectory(self, "选择 MATLAB DRT 输出目录", str(Path.cwd()))
         if folder:
             self._start_matlab_drt([spectrum], Path(folder) / f"{spectrum.metadata.file_path.stem}_matlab_drt")
     def _run_matlab_drt_batch(self) -> None:
         if not self.state.spectra:
-            self._warn("?????????? MATLAB DRT?")
+            self._warn("未找到已运行的 MATLAB DRT 结果?")
             return
-        folder = QFileDialog.getExistingDirectory(self, "?? MATLAB DRT ??????", str(Path.cwd()))
+        folder = QFileDialog.getExistingDirectory(self, "选择 MATLAB DRT 输出目录", str(Path.cwd()))
         if folder:
             self._start_matlab_drt(self.state.spectra, Path(folder) / "matlab_drt_batch")
     def _show_matlab_drt_result(self, result: MatlabDrtResult | None) -> None:
@@ -1811,31 +1818,31 @@ class MainWindow(MSFluentWindow):
         self.matlab_status.setPlainText(
             "\n".join(
                 [
-                    f"???: {result.returncode}",
-                    f"????: {result.output_dir}",
-                    f"????: {result.staging_dir}",
-                    f"?????: {len(result.output_files)}",
-                    "????:",
+                    f"返回码: {result.returncode}",
+                    f"输出目录: {result.output_dir}",
+                    f"暂存目录: {result.staging_dir}",
+                    f"输出文件: {len(result.output_files)}",
+                    "文件列表:",
                     *[f"  {path.name}" for path in result.output_files[:12]],
                 ]
             )
         )
         if result.stdout.strip():
-            lines.extend(["", "????:", result.stdout.strip()])
+            lines.extend(["", "标准输出:", result.stdout.strip()])
         if result.stderr.strip():
-            lines.extend(["", "????:", result.stderr.strip()])
+            lines.extend(["", "错误输出:", result.stderr.strip()])
         self.matlab_log.setPlainText("\n".join(lines))
         if result.returncode == 0:
-            self.fit_metric["value"].setText("DRT ??")
-            QMessageBox.information(self, "MATLAB DRT ??", f"??? {len(result.output_files)} ? DRT ???????:\n{result.output_dir}")
+            self.fit_metric["value"].setText("DRT 完成")
+            QMessageBox.information(self, "MATLAB DRT 完成", f"已生成 {len(result.output_files)} 个 DRT 结果文件:\n{result.output_dir}")
         else:
-            self.fit_metric["value"].setText("DRT ??")
-            self._warn(f"MATLAB DRT ?????\n????????\n????: {result.output_dir}")
+            self.fit_metric["value"].setText("DRT 完成")
+            self._warn(f"MATLAB DRT 运行异常\n部分结果可能不完整\n输出目录: {result.output_dir}")
     def _export_current_bundle(self) -> None:
         spectrum = self._current_spectrum()
         if spectrum is None:
             return
-        output_path, fmt = self._select_export_target("??????", spectrum.metadata.file_path.stem)
+        output_path, fmt = self._select_export_target("导出单个谱图", spectrum.metadata.file_path.stem)
         if output_path is None:
             return
         quality = self.state.qualities.get(spectrum.display_name) or assess_spectrum_quality(spectrum, run_kk=False)
@@ -1843,17 +1850,17 @@ class MainWindow(MSFluentWindow):
         fit = self.state.fits.get((spectrum.display_name, str(self.template_combo.currentData())))
         drt_dir = self._last_matlab_result.output_dir if self._last_matlab_result is not None else None
         paths = export_spectrum_bundle(output_path, spectrum, fit=fit, quality=quality, fmt=fmt, drt_source_dir=drt_dir)
-        QMessageBox.information(self, "????", f"??????:\n{self._export_result_location(paths)}")
+        QMessageBox.information(self, "导出完成", f"已导出到:\n{self._export_result_location(paths)}")
     def _export_batch_bundle(self) -> None:
         if self.state.batch_summary is None:
-            self._warn("?????????")
+            self._warn("没有可导出的数据")
             return
-        output_path, fmt = self._select_export_target("??????", "batch_export")
+        output_path, fmt = self._select_export_target("导出批量数据", "batch_export")
         if output_path is None:
             return
         drt_dir = self._last_matlab_result.output_dir if self._last_matlab_result is not None else None
         paths = export_batch_summary(output_path, self.state.batch_summary, fmt=fmt, drt_source_dir=drt_dir)
-        QMessageBox.information(self, "????", f"??????:\n{self._export_result_location(paths)}")
+        QMessageBox.information(self, "导出完成", f"已导出到:\n{self._export_result_location(paths)}")
     def _select_export_target(self, title: str, default_stem: str) -> tuple[Path | None, str]:
         path, selected_filter = QFileDialog.getSaveFileName(
             self,
@@ -1936,11 +1943,11 @@ class MainWindow(MSFluentWindow):
                 continue
             value = float(value)
             if not np.isfinite(value):
-                lines.append(f"  {label}: 忙聴聽忙鲁聲猫炉聞盲录掳")
+                lines.append(f"  {label}: 未计算")
             elif value > 20.0:
-                lines.append(f"  {label}: {value:.2f}%  氓禄潞猫庐庐氓陇聧忙聽赂")
+                lines.append(f"  {label}: {value:.2f}%  超阈值偏高")
             elif value > 10.0:
-                lines.append(f"  {label}: {value:.2f}%  猫颅娄氓聭聤")
+                lines.append(f"  {label}: {value:.2f}%  偏高但可接受")
             else:
                 lines.append(f"  {label}: {value:.2f}%")
         return lines
@@ -1951,11 +1958,11 @@ class MainWindow(MSFluentWindow):
             return ""
         values = self._primary_error_values(fit)
         if not values:
-            return "忙聹陋猫炉聞盲录掳"
+            return "未计算误差"
         high_parts = [f"{label} {value:.1f}%" for label, value in values if value > 20.0]
         if high_parts:
-            return "茅芦聵猫炉炉氓路庐: " + "茂录聸".join(high_parts)
-        return "茂录聸".join(f"{label} {value:.1f}%" for label, value in values)
+            return "超误差:" + "，".join(high_parts)
+        return "，".join(f"{label} {value:.1f}%" for label, value in values)
     def _primary_error_pairs(self, fit: FitOutcome) -> list[tuple[str, str]]:
         if fit.model_key == "zview_double_rq_qrwo":
             return [("Rs_stderr_pct", "Rs"), ("Rsei_stderr_pct", "Rsei"), ("Rct_stderr_pct", "Rct")]
@@ -2025,7 +2032,7 @@ class MainWindow(MSFluentWindow):
         if 0 <= row < len(self.state.spectra):
             return self.state.spectra[row]
         if not silent:
-            self._warn("猫炉路氓\n聢茅聙聣忙聥漏盲赂聙忙聺隆猫掳卤氓聸戮茫聙聜")
+            self._warn("当前谱图还没有拟合结果。\n请先执行拟合。")
         return None
     def _warn(self, message: str) -> None:
         QMessageBox.warning(self, "EISMaster", message)

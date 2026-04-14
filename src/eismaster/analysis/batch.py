@@ -11,6 +11,7 @@ import typing
 
 import concurrent.futures
 import math
+import multiprocessing
 import sys
 from collections.abc import Callable
 from dataclasses import replace
@@ -56,7 +57,10 @@ def analyze_batch(
         return BatchSummary(model_key=model_key, items=[])
 
     mode = "double" if model_key == DOUBLE_MODEL_KEY else "single"
-    items = _analyze_batch_fixed_sequential(spectra, mode, model_key, progress_callback)
+    if _should_use_parallel_processes() and len(spectra) >= 2:
+        items = _analyze_batch_parallel_fixed(spectra, mode, model_key, progress_callback)
+    else:
+        items = _analyze_batch_fixed_sequential(spectra, mode, model_key, progress_callback)
     return BatchSummary(model_key=model_key, items=items)
 
 
@@ -68,7 +72,10 @@ def analyze_batch_auto(
     if not spectra:
         return BatchSummary(model_key="auto", items=[])
 
-    items = _analyze_batch_auto_sequential(spectra, progress_callback)
+    if _should_use_parallel_processes() and len(spectra) >= 2:
+        items = _analyze_batch_parallel_auto(spectra, progress_callback)
+    else:
+        items = _analyze_batch_auto_sequential(spectra, progress_callback)
     return BatchSummary(model_key="auto", items=items)
 
 
@@ -83,7 +90,9 @@ def _analyze_batch_parallel_fixed(
     results: dict[int, BatchItemResult] = {}
     current_idx = 0
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=min(multiprocessing.cpu_count(), max(len(spectra), 1))
+    ) as executor:
         future_to_idx = {
             executor.submit(_worker_fixed, spec, mode, model_key): i
             for i, spec in enumerate(spectra)
@@ -122,7 +131,9 @@ def _analyze_batch_parallel_auto(
     results: dict[int, tuple[FitOutcome, FitOutcome, SegmentDetection, QualityReport]] = {}
     current_idx = 0
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=min(multiprocessing.cpu_count(), max(len(spectra), 1))
+    ) as executor:
         future_to_idx = {executor.submit(_worker_auto, spec): i for i, spec in enumerate(spectra)}
         for future in concurrent.futures.as_completed(future_to_idx):
             idx = future_to_idx[future]
@@ -393,8 +404,8 @@ def _should_use_parallel_processes() -> bool:
 
 def _mode_label(mode: str) -> str:
     return "double-arc" if mode == "double" else "single-arc"
-def _should_use_parallel_processes() -> bool:
-    return False
+
+
 def _finite_or(value: Optional[float], fallback: float) -> float:
     if value is None:
         return fallback

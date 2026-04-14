@@ -8,14 +8,14 @@ import typing
 
 
 
-"""Pre-fitting data guard â?generates a point mask without mutating the
+"""Pre-fitting data guard — generates a point mask without mutating the
 original ``SpectrumData``.
 
 Three optional cleaning passes:
 
-1. **NaN / Inf removal** â?unconditional.
-2. **Inductive-loop masking** â?high-frequency points where Z'' > 0.
-3. **Statistical outlier masking** â?curvature + local-slope deviation.
+1. **NaN / Inf removal** — unconditional.
+2. **Inductive-loop masking** — high-frequency points where Z'' > 0.
+3. **Statistical outlier masking** — curvature + local-slope deviation.
 """
 
 
