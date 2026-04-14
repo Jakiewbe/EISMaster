@@ -61,6 +61,44 @@ class ExportTests(unittest.TestCase):
         self.assertIn("label\tfile\tRs\tRct", batch_header)
         self.assertEqual(curve_header, "OCV\t\t\t")
 
+    def test_xlsx_export_creates_workbook(self) -> None:
+        spectrum = load_spectrum(TXT_SAMPLE)
+        quality = assess_spectrum_quality(spectrum)
+        fit = FitOutcome(
+            model_key="demo",
+            model_label="Demo Model",
+            status="ok",
+            message="ok",
+            parameters={"Rs": 5.8, "Rct": 120.0},
+            statistics={"rss": 1.2, "aic": 2.3, "bic": 3.4, "chi2_reduced": 0.12},
+            predicted_real_ohm=spectrum.z_real_ohm.copy(),
+            predicted_imag_ohm=spectrum.z_imag_ohm.copy(),
+        )
+        xlsx_path = self.tmp_root / "export.xlsx"
+        paths = export_spectrum_bundle(xlsx_path, spectrum, fit=fit, quality=quality, fmt="xlsx")
+        self.assertIn("workbook", paths)
+        self.assertTrue(paths["workbook"].exists())
+        self.assertEqual(paths["workbook"].suffix, ".xlsx")
+
+    def test_xlsx_batch_export(self) -> None:
+        spectrum = load_spectrum(TXT_SAMPLE)
+        quality = assess_spectrum_quality(spectrum)
+        fit = FitOutcome(
+            model_key="demo",
+            model_label="Demo Model",
+            status="ok",
+            message="ok",
+            parameters={"Rs": 5.8, "Rct": 120.0},
+            statistics={"rss": 1.2, "aic": 2.3, "bic": 3.4, "chi2_reduced": 0.12},
+            predicted_real_ohm=spectrum.z_real_ohm.copy(),
+            predicted_imag_ohm=spectrum.z_imag_ohm.copy(),
+        )
+        summary = BatchSummary(model_key="demo", items=[BatchItemResult(spectrum=spectrum, quality=quality, fit=fit)])
+        xlsx_path = self.tmp_root / "batch.xlsx"
+        paths = export_batch_summary(xlsx_path, summary, fmt="xlsx")
+        self.assertIn("workbook", paths)
+        self.assertTrue(paths["workbook"].exists())
+
 
 if __name__ == "__main__":
     unittest.main()

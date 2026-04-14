@@ -39,32 +39,9 @@ def export_spectrum_bundle(
     rs_rct_table = build_rs_rct_table([(spectrum, fit)])
     fit_matrix = build_fit_overlay_matrix(spectra, fits)
     drt_matrix = build_drt_matrix(spectra, drt_source_dir)
+    fit_report = build_fit_report_table(spectrum, quality, fit) if fit is not None and quality is not None else None
 
-    if fmt == "xlsx":
-        workbook = target if target.suffix.lower() == ".xlsx" else target.with_suffix(".xlsx")
-        with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
-            raw_matrix.to_excel(writer, sheet_name="raw_plot", index=False, header=False)
-            rs_rct_table.to_excel(writer, sheet_name="rs_rct", index=False)
-            fit_matrix.to_excel(writer, sheet_name="fit_overlay", index=False, header=False)
-            if drt_matrix is not None:
-                drt_matrix.to_excel(writer, sheet_name="drt", index=False, header=False)
-            if fit is not None and quality is not None:
-                build_fit_report_table(spectrum, quality, fit).to_excel(writer, sheet_name="fit_report", index=False)
-        return {"workbook": workbook}
-
-    suffix = ".csv" if fmt == "csv" else ".txt"
-    base = target.with_suffix("")
-    paths = {
-        "raw_plot": _write_matrix(raw_matrix, base.with_name(base.name + "_raw_plot" + suffix), fmt),
-        "rs_rct": _write_frame(rs_rct_table, base.with_name(base.name + "_rs_rct" + suffix), fmt),
-        "fit_overlay": _write_matrix(fit_matrix, base.with_name(base.name + "_fit_overlay" + suffix), fmt),
-    }
-    if drt_matrix is not None:
-        paths["drt"] = _write_matrix(drt_matrix, base.with_name(base.name + "_drt" + suffix), fmt)
-    if fit is not None and quality is not None:
-        report = build_fit_report_table(spectrum, quality, fit)
-        paths["fit_report"] = _write_frame(report, base.with_name(base.name + "_fit_report" + suffix), fmt)
-    return paths
+    return _write_export_bundle(target, raw_matrix, rs_rct_table, fit_matrix, drt_matrix, fit_report, fmt)
 
 
 def export_batch_summary(
@@ -84,6 +61,18 @@ def export_batch_summary(
     fit_matrix = build_fit_overlay_matrix(spectra, fits)
     drt_matrix = build_drt_matrix(spectra, drt_source_dir)
 
+    return _write_export_bundle(target, raw_matrix, rs_rct_table, fit_matrix, drt_matrix, None, fmt)
+
+
+def _write_export_bundle(
+    target: Path,
+    raw_matrix: pd.DataFrame,
+    rs_rct_table: pd.DataFrame,
+    fit_matrix: pd.DataFrame,
+    drt_matrix: Optional[pd.DataFrame],
+    fit_report: Optional[pd.DataFrame],
+    fmt: str,
+) -> dict[str, Path]:
     if fmt == "xlsx":
         workbook = target if target.suffix.lower() == ".xlsx" else target.with_suffix(".xlsx")
         with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
@@ -92,6 +81,8 @@ def export_batch_summary(
             fit_matrix.to_excel(writer, sheet_name="fit_overlay", index=False, header=False)
             if drt_matrix is not None:
                 drt_matrix.to_excel(writer, sheet_name="drt", index=False, header=False)
+            if fit_report is not None:
+                fit_report.to_excel(writer, sheet_name="fit_report", index=False)
         return {"workbook": workbook}
 
     suffix = ".csv" if fmt == "csv" else ".txt"
@@ -103,6 +94,8 @@ def export_batch_summary(
     }
     if drt_matrix is not None:
         paths["drt"] = _write_matrix(drt_matrix, base.with_name(base.name + "_drt" + suffix), fmt)
+    if fit_report is not None:
+        paths["fit_report"] = _write_frame(fit_report, base.with_name(base.name + "_fit_report" + suffix), fmt)
     return paths
 
 
@@ -194,6 +187,18 @@ def build_fit_report_table(spectrum: SpectrumData, quality: QualityReport, fit: 
         {"section": "fit", "key": "status", "value": fit.status},
         {"section": "fit", "key": "message", "value": fit.message},
     ]
+    if fit.diagnosis_type:
+        rows.extend(
+            [
+                {"section": "fit", "key": "diagnosis_type", "value": fit.diagnosis_type},
+                {"section": "fit", "key": "diagnosis_severity", "value": fit.diagnosis_severity},
+                {"section": "fit", "key": "diagnosis_explanation", "value": fit.diagnosis_explanation},
+            ]
+        )
+        rows.extend(
+            {"section": "fit", "key": f"diagnosis_suggestion_{i+1}", "value": text}
+            for i, text in enumerate(fit.diagnosis_suggestions[:3])
+        )
     rows.extend({"section": "quality", "key": f"issue_{i+1}", "value": line} for i, line in enumerate(quality.summary_lines()))
     rows.extend({"section": "parameter", "key": key, "value": value} for key, value in fit.parameters.items())
     rows.extend({"section": "stat", "key": key, "value": value} for key, value in fit.statistics.items())
@@ -306,7 +311,7 @@ def _parse_drt_file(path: Path) -> tuple[list[float], list[float]]:
     return tau, ys
 
 
-def _safe_get(values: np.ndarray, index: int):
+def _safe_get(values: np.ndarray, index: int) -> float:
     if index >= len(values):
         return np.nan
     return values[index]

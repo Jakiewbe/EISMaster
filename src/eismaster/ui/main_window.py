@@ -1,17 +1,19 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
+import logging
 import numpy as np
 import time
 from eismaster.analysis.batch import analyze_batch_auto
 from eismaster.analysis.circuits import TEMPLATES
 from eismaster.analysis.fitting import fit_spectrum
 from eismaster.analysis.quality import assess_spectrum_quality
-from eismaster.analysis.segmentation import SegmentDetection, detect_segments
+from eismaster.analysis.segmentation import ArcRange, SegmentDetection, detect_segments
 from eismaster.exporters import export_batch_summary, export_fit_results, export_spectrum_bundle
 from eismaster.io import load_spectra_from_folder, load_spectrum
 from eismaster.matlab_drt import MatlabDrtConfig, MatlabDrtResult, run_matlab_drt, stage_matlab_drt_inputs
 from eismaster.models import BatchSummary, FitOutcome, QualityReport, SpectrumData
+from eismaster.ui.range_slider import RangeSlider
 from PySide6.QtCore import QObject, QSignalBlocker, QThread, Signal, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -90,6 +92,11 @@ if pg is not None:
                 event.accept()
                 return
             super().mouseDoubleClickEvent(event)
+
+
+logger = logging.getLogger(__name__)
+
+
 class MatlabDrtWorker(QObject):
     finished = Signal(object, object)
     def __init__(self, config: MatlabDrtConfig, spectra: list[SpectrumData], export_dir: Path) -> None:
@@ -124,6 +131,7 @@ class AppState:
     qualities: dict[str, QualityReport] = field(default_factory=dict)
     fits: dict[tuple[str, str], FitOutcome] = field(default_factory=dict)
     segment_hints: dict[str, SegmentDetection] = field(default_factory=dict)
+    point_masks: dict[str, np.ndarray] = field(default_factory=dict)
     batch_summary: BatchSummary | None = None
     current_index: int = -1
     drt_busy: bool = False
@@ -142,12 +150,8 @@ class MainWindow(MSFluentWindow):
         self._queue_tables: dict[str, TableWidget] = {}
         self._queue_meta_boxes: dict[str, QTextEdit] = {}
         self._batch_plot_cache: dict[str, dict[str, object]] = {}
-        self._segment_handles: dict[str, object] = {}
         self._segment_overlay_items: list[object] = []
-        self._segment_handle_sync = False
-        self._segment_drag_active = False
-        self._segment_control_sync = False
-        self._fit_plot_click_connected = False
+        self._range_scatter_items: list[object] = []
         # 1. UI Initialization Settings
         setTheme(Theme.DARK)
         self.setMicaEffectEnabled(True)
@@ -297,12 +301,6 @@ class MainWindow(MSFluentWindow):
         top = self._panel("拟合工具", "选择等效电路模板进行拟合，也可运行 MATLAB DRT 分析")
         top_layout = top.layout()
         row = QHBoxLayout()
-        row.addWidget(StrongBodyLabel("电路模板"))
-        self.template_combo = ComboBox()
-        for key, template in TEMPLATES.items():
-            self.template_combo.addItem(template.label, userData=key)
-        self.template_combo.currentIndexChanged.connect(self._refresh_fit_for_current_selection)
-        row.addWidget(self.template_combo, 1)
         self.fit_current_btn = PrimaryPushButton(FIF.PLAY, "开始拟合")
         self.fit_current_btn.clicked.connect(self._fit_current)
         self.export_current_btn = PushButton(FIF.SHARE, "导出数据")
@@ -312,77 +310,22 @@ class MainWindow(MSFluentWindow):
         row.addWidget(self.fit_current_btn)
         row.addWidget(self.export_current_btn)
         row.addWidget(self.run_drt_current_btn)
+        row.addStretch(1)
         top_layout.addLayout(row)
         layout.addWidget(top)
-        segment_panel = self._panel("分段设置 (ZView)", "可设置单弧或双弧拟合的分段点")
-        segment_layout = QVBoxLayout()
-        self.segment_mode_combo = ComboBox()
-        self.segment_mode_combo.addItem("自动", userData="auto")
-        self.segment_mode_combo.addItem("单弧", userData="single")
-        self.segment_mode_combo.addItem("双弧", userData="double")
-        self.segment_mode_combo.currentIndexChanged.connect(self._refresh_fit_for_current_selection)
-        self.segment_split1_spin = LineEdit()
-        self.segment_split1_spin.setPlaceholderText("分界点 1")
-        self.segment_split1_spin.setFixedWidth(80)
-        self.segment_split2_spin = LineEdit()
-        self.segment_split2_spin.setPlaceholderText("分界点 2")
-        self.segment_split2_spin.setFixedWidth(80)
-        self.segment_detect_btn = PushButton(FIF.SEARCH, "自动检测")
-        self.segment_detect_btn.clicked.connect(self._detect_segments_for_current)
-        segment_layout.addWidget(BodyLabel("频率范围:"))
-        segment_top = QHBoxLayout()
-        segment_layout.addLayout(segment_top)
-        segment_top.addWidget(BodyLabel("模式:"))
-        segment_top.addWidget(self.segment_mode_combo)
-        segment_top.addStretch(1)
-        segment_layout.addWidget(BodyLabel("分界点设置:"))
-        segment_grid = QGridLayout()
-        segment_grid.setHorizontalSpacing(10)
-        segment_grid.setVerticalSpacing(8)
-        self.segment_split1_freq_label = BodyLabel("分界点 1 频率 [Hz]")
-        self.segment_split1_freq_edit = LineEdit()
-        self.segment_split1_freq_edit.setPlaceholderText("分界点 1 频率 [Hz]")
-        self.segment_split1_freq_edit.setFixedWidth(150)
-        self.segment_split1_freq_edit.editingFinished.connect(lambda: self._on_segment_frequency_edited("split1"))
-        self.segment_split1_index_label = CaptionLabel("索引")
-        self.segment_split1_spin.setReadOnly(True)
-        self.segment_split1_spin.setFixedWidth(72)
-        self.segment_split2_freq_label = BodyLabel("分界点 2 频率 [Hz]")
-        self.segment_split2_freq_edit = LineEdit()
-        self.segment_split2_freq_edit.setPlaceholderText("分界点 2 频率 [Hz]")
-        self.segment_split2_freq_edit.setFixedWidth(150)
-        self.segment_split2_freq_edit.editingFinished.connect(lambda: self._on_segment_frequency_edited("split2"))
-        self.segment_split2_index_label = CaptionLabel("索引")
-        self.segment_split2_spin.setReadOnly(True)
-        self.segment_split2_spin.setFixedWidth(72)
-        segment_grid.addWidget(self.segment_split1_freq_label, 0, 0)
-        segment_grid.addWidget(self.segment_split1_freq_edit, 0, 1)
-        segment_grid.addWidget(self.segment_split1_index_label, 0, 2)
-        segment_grid.addWidget(self.segment_split1_spin, 0, 3)
-        segment_grid.addWidget(self.segment_split2_freq_label, 1, 0)
-        segment_grid.addWidget(self.segment_split2_freq_edit, 1, 1)
-        segment_grid.addWidget(self.segment_split2_index_label, 1, 2)
-        segment_grid.addWidget(self.segment_split2_spin, 1, 3)
-        segment_grid.setColumnStretch(4, 1)
-        segment_layout.addLayout(segment_grid)
-        self.segment_split2_widgets = [
-            self.segment_split2_freq_label,
-            self.segment_split2_freq_edit,
-            self.segment_split2_index_label,
-            self.segment_split2_spin,
-        ]
-        self.segment_mode_status = CaptionLabel("分段模式: 自动")
-        self.segment_peak_info_label = CaptionLabel("峰值: -")
-        self.segment_arc1_label = CaptionLabel("弧 1: -")
-        self.segment_arc2_label = CaptionLabel("弧 2: -")
-        self.segment_tail_label = CaptionLabel("尾部: -")
-        segment_layout.addWidget(self.segment_mode_status)
-        segment_layout.addWidget(self.segment_peak_info_label)
-        segment_layout.addWidget(self.segment_arc1_label)
-        segment_layout.addWidget(self.segment_arc2_label)
-        segment_layout.addWidget(self.segment_tail_label)
-        segment_panel.layout().addLayout(segment_layout)
-        layout.addWidget(segment_panel)
+        # --- Simplified arc range panel (template + mode only) ---
+        arc_panel = self._panel("拟合设置", "选择等效电路模板，拖动图表面板中的滑块选定弧范围")
+        arc_layout = QHBoxLayout()
+        arc_layout.addWidget(StrongBodyLabel("电路模板"))
+        self.template_combo = ComboBox()
+        for key, template in TEMPLATES.items():
+            self.template_combo.addItem(template.label, userData=key)
+        self.template_combo.currentIndexChanged.connect(self._refresh_fit_for_current_selection)
+        arc_layout.addWidget(self.template_combo, 1)
+        self.segment_mode_label = CaptionLabel("分段模式: single (由电路模板决定)")
+        arc_layout.addWidget(self.segment_mode_label)
+        arc_panel.layout().addLayout(arc_layout)
+        layout.addWidget(arc_panel)
         split = QSplitter(Qt.Horizontal)
         split.setChildrenCollapsible(False)
         split.addWidget(self._build_sidebar("fit"))
@@ -393,8 +336,50 @@ class MainWindow(MSFluentWindow):
         split.addWidget(result_panel)
         plot_panel = self._panel("拟合曲线图", "展示 Nyquist 图和拟合曲线的对比")
         plot_layout = QVBoxLayout()
+        # ── Arc 1 slider (inside plot panel) ──
+        arc1_row = QHBoxLayout()
+        self.arc1_label = CaptionLabel("弧1: -")
+        arc1_row.addWidget(self.arc1_label, 1)
+        self.arc1_reset_btn = PushButton(FIF.SYNC, "重置")
+        self.arc1_reset_btn.clicked.connect(self._reset_arc1_range)
+        arc1_row.addWidget(self.arc1_reset_btn)
+        plot_layout.addLayout(arc1_row)
+        self.arc1_slider = RangeSlider()
+        self.arc1_slider.rangeChanged.connect(self._on_arc1_slider_changed)
+        plot_layout.addWidget(self.arc1_slider)
+        # ── Arc 2 slider (dual-arc only, inside plot panel) ──
+        self.arc2_container = QWidget()
+        arc2_layout = QHBoxLayout(self.arc2_container)
+        arc2_layout.setContentsMargins(0, 0, 0, 0)
+        arc2_layout.setSpacing(4)
+        self.arc2_label = CaptionLabel("弧2: -")
+        arc2_layout.addWidget(self.arc2_label, 1)
+        self.arc2_reset_btn = PushButton(FIF.SYNC, "重置")
+        self.arc2_reset_btn.clicked.connect(self._reset_arc2_range)
+        arc2_layout.addWidget(self.arc2_reset_btn)
+        plot_layout.addWidget(self.arc2_container)
+        self.arc2_slider = RangeSlider()
+        self.arc2_slider.rangeChanged.connect(self._on_arc2_slider_changed)
+        plot_layout.addWidget(self.arc2_slider)
+        self.arc2_widgets = [
+            self.arc2_container,
+            self.arc2_label,
+            self.arc2_reset_btn,
+            self.arc2_slider,
+        ]
+        # ── Arc info labels ──
+        self.segment_peak_info_label = CaptionLabel("峰值: -")
+        self.segment_arc1_label = CaptionLabel("弧1: -")
+        self.segment_arc2_label = CaptionLabel("弧2: -")
+        self.segment_tail_label = CaptionLabel("尾部: -")
+        plot_layout.addWidget(self.segment_peak_info_label)
+        plot_layout.addWidget(self.segment_arc1_label)
+        plot_layout.addWidget(self.segment_arc2_label)
+        plot_layout.addWidget(self.segment_tail_label)
+        # ── Plots ──
         self.fit_nyquist_plot = self._plot("Nyquist 拟合", "Z' [ohm]", "-Z'' [ohm]")
         self.fit_residual_plot = self._plot("残差 [%]", "频率 [Hz]", "残差", log_x=True)
+        self.fit_residual_plot.hide()
         plot_layout.addWidget(self.fit_nyquist_plot, 3)
         plot_layout.addWidget(self.fit_residual_plot, 1)
         plot_panel.layout().addLayout(plot_layout)
@@ -693,7 +678,7 @@ class MainWindow(MSFluentWindow):
         spectrum = self.state.spectra[row]
         quality = self.state.qualities.get(spectrum.display_name) or assess_spectrum_quality(spectrum, run_kk=False)
         self.state.qualities[spectrum.display_name] = quality
-        self._prime_segment_controls(spectrum)
+        self._prime_arc_sliders(spectrum)
         self._refresh_sidebar(spectrum, quality)
         self._update_global_status()
         if refresh_page:
@@ -715,6 +700,7 @@ class MainWindow(MSFluentWindow):
         spectrum = self.state.spectra.pop(row)
         self.state.qualities.pop(spectrum.display_name, None)
         self.state.segment_hints.pop(spectrum.display_name, None)
+        self.state.point_masks.pop(spectrum.display_name, None)
         for key in [key for key in self.state.fits if key[0] == spectrum.display_name]:
             self.state.fits.pop(key, None)
         self._invalidate_batch_outputs()
@@ -752,12 +738,6 @@ class MainWindow(MSFluentWindow):
         self.batch_text.setPlainText("批量摘要将显示在这里。")
         self.matlab_status.setPlainText("MATLAB DRT 状态将显示在这里。")
         self.matlab_log.setPlainText("")
-        if hasattr(self, "segment_split1_freq_edit"):
-            self.segment_split1_freq_edit.clear()
-            self.segment_split2_freq_edit.clear()
-            self.segment_split1_spin.clear()
-            self.segment_split2_spin.clear()
-            self._update_split_info_labels(None)
         if hasattr(self, "batch_progress") and self.batch_progress:
             self.batch_progress.setValue(0)
         self.data_table.clearContents()
@@ -777,6 +757,14 @@ class MainWindow(MSFluentWindow):
                 if plot:
                     self._reset_plot(plot)
             self._clear_segment_overlay()
+            self._range_scatter_items = []
+        if hasattr(self, "arc1_slider"):
+            with QSignalBlocker(self.arc1_slider):
+                self.arc1_slider.setRange(0, 0)
+                self.arc1_slider.setValue(0, 0)
+        if hasattr(self, "arc1_start_freq_label"):
+            self.arc1_start_freq_label.setText("起始: --")
+            self.arc1_end_freq_label.setText("终止: --")
         self._update_global_status()
     def _update_global_status(self) -> None:
         if not self.state.spectra:
@@ -893,8 +881,7 @@ class MainWindow(MSFluentWindow):
         self.bode_mag_plot.plot(spectrum.freq_hz, spectrum.z_mod_ohm, pen=pen, symbol="o", symbolSize=4, symbolBrush=brush)
         self.bode_phase_plot.plot(spectrum.freq_hz, spectrum.phase_deg, pen=pen, symbol="o", symbolSize=4, symbolBrush=brush)
         self._set_nyquist_axes(self.nyquist_plot, spectrum.z_real_ohm, spectrum.minus_z_imag_ohm)
-    def _toggle_quality_detail(self) -> None:
-        pass
+
     def _run_kk_for_current(self) -> None:
         spectrum = self._current_spectrum()
         if spectrum is None:
@@ -913,407 +900,169 @@ class MainWindow(MSFluentWindow):
         self._update_global_status()
     def _is_zview_template_selected(self) -> bool:
         return str(self.template_combo.currentData()).startswith("zview_")
-    def _segment_min_points(self) -> int:
-        return 6
-    def _format_segment_frequency(self, value: float | None) -> str:
+    def _resolve_segment_mode(self) -> str:
+        """Derive segment mode from the selected circuit template."""
+        key = str(self.template_combo.currentData())
+        if key == "zview_double_rq_qrwo":
+            return "double"
+        if key == "zview_segmented_rq_rwo":
+            return "single"
+        return "auto"
+    def _format_arc_frequency(self, value: float | None) -> str:
         if value is None or not np.isfinite(value) or value <= 0:
             return ""
         return f"{value:.6g}"
-    def _segment_freq_for_index(self, spectrum: SpectrumData, index: int | None) -> float | None:
+    def _arc_freq_for_index(self, spectrum: SpectrumData, index: int | None) -> float | None:
         if index is None or index < 0 or index >= spectrum.n_points:
             return None
         return float(spectrum.freq_hz[int(index)])
-    def _segment_index_for_frequency(self, spectrum: SpectrumData, freq_hz: float | None) -> int | None:
-        if freq_hz is None or not np.isfinite(freq_hz) or freq_hz <= 0:
-            return None
-        freqs = spectrum.freq_hz.astype(float, copy=False)
-        safe_freqs = np.clip(freqs, np.finfo(float).tiny, None)
-        target = float(np.clip(freq_hz, safe_freqs.min(), safe_freqs.max()))
-        nearest = int(np.argmin(np.abs(np.log10(safe_freqs) - np.log10(target))))
-        return nearest
-    def _segment_index_bounds(
-        self,
-        spectrum: SpectrumData,
-        resolved_mode: str,
-        base_detection: SegmentDetection,
-        split1: int | None = None,
-    ) -> tuple[tuple[int, int], tuple[int, int] | None]:
-        min_points = self._segment_min_points()
-        n_points = spectrum.n_points
-        if resolved_mode == "single":
-            lo = min_points - 1
-            hi = max(lo, n_points - min_points)
-            return (lo, hi), None
-        peak2 = base_detection.peak_indices[1] if len(base_detection.peak_indices) > 1 else None
-        split2_hi = max(min_points - 1, n_points - min_points)
-        split1_lo = min_points - 1
-        split1_hi = max(split1_lo, split2_hi - (min_points - 1))
-        if peak2 is not None:
-            split1_hi = max(split1_lo, min(split1_hi, peak2 - 1))
-        split1_bounds = (split1_lo, split1_hi)
-        effective_split1 = split1 if split1 is not None else base_detection.split_indices[0]
-        effective_split1 = int(np.clip(effective_split1, split1_bounds[0], split1_bounds[1]))
-        split2_lo = effective_split1 + (min_points - 1)
-        if peak2 is not None:
-            split2_lo = max(split2_lo, peak2)
-        split2_lo = min(split2_lo, split2_hi)
-        split2_bounds = (split2_lo, split2_hi)
-        return split1_bounds, split2_bounds
-    def _sanitize_segment_indices(
-        self,
-        spectrum: SpectrumData,
-        requested_mode: str,
-        split1: int | None,
-        split2: int | None,
-        base_detection: SegmentDetection | None = None,
-    ) -> tuple[int | None, int | None, SegmentDetection]:
-        detection = base_detection or detect_segments(spectrum, mode=requested_mode)
-        resolved_mode = detection.resolved_mode if requested_mode == "auto" else requested_mode
-        if resolved_mode == "single":
-            bounds, _ = self._segment_index_bounds(spectrum, "single", detection)
-            candidate = detection.split_indices[0] if split1 is None else split1
-            split1_value = int(np.clip(candidate, bounds[0], bounds[1]))
-            return split1_value, None, detection
-        split1_bounds, split2_bounds = self._segment_index_bounds(spectrum, "double", detection, split1)
-        default_split1 = detection.split_indices[0] if detection.split_indices else split1_bounds[0]
-        split1_value = int(np.clip(default_split1 if split1 is None else split1, split1_bounds[0], split1_bounds[1]))
-        split1_bounds, split2_bounds = self._segment_index_bounds(spectrum, "double", detection, split1_value)
-        default_split2 = detection.split_indices[1] if len(detection.split_indices) > 1 else split2_bounds[0]
-        split2_value = int(np.clip(default_split2 if split2 is None else split2, split2_bounds[0], split2_bounds[1]))
-        return split1_value, split2_value, detection
-    def _set_split2_controls_visible(self, visible: bool) -> None:
-        for widget in getattr(self, "segment_split2_widgets", []):
+    def _set_arc2_visible(self, visible: bool) -> None:
+        for widget in getattr(self, "arc2_widgets", []):
             widget.setVisible(visible)
         if hasattr(self, "segment_arc2_label"):
             self.segment_arc2_label.setVisible(visible)
-    def _sync_segment_controls_from_detection(self, spectrum: SpectrumData, detection: SegmentDetection) -> None:
-        split_indices = list(detection.split_indices)
-        split1 = split_indices[0] if split_indices else None
-        split2 = split_indices[1] if len(split_indices) > 1 else None
-        show_split2 = detection.resolved_mode == "double"
-        self._set_split2_controls_visible(show_split2)
-        self._segment_control_sync = True
-        try:
-            with QSignalBlocker(self.segment_split1_freq_edit):
-                self.segment_split1_freq_edit.setText(self._format_segment_frequency(self._segment_freq_for_index(spectrum, split1)))
-            with QSignalBlocker(self.segment_split1_spin):
-                self.segment_split1_spin.setText("" if split1 is None else str(split1))
-            with QSignalBlocker(self.segment_split2_freq_edit):
-                self.segment_split2_freq_edit.setText(self._format_segment_frequency(self._segment_freq_for_index(spectrum, split2)))
-            with QSignalBlocker(self.segment_split2_spin):
-                self.segment_split2_spin.setText("" if split2 is None else str(split2))
-        finally:
-            self._segment_control_sync = False
-        self.segment_split1_freq_label.setText("split Frequency [Hz]" if not show_split2 else "split1 Frequency [Hz]")
-        if hasattr(self, "segment_split2_freq_label"):
-            self.segment_split2_freq_label.setText("split2 Frequency [Hz]")
-    def _refresh_segment_controls_state(self, spectrum: SpectrumData | None = None) -> None:
-        enabled = self._is_zview_template_selected()
-        for widget in (
-            self.segment_mode_combo,
-            self.segment_split1_freq_edit,
-            self.segment_split2_freq_edit,
-            self.segment_split1_spin,
-            self.segment_split2_spin,
-            self.segment_detect_btn,
-        ):
-            widget.setEnabled(enabled)
-        if enabled and spectrum is not None:
-            detection = detect_segments(spectrum, mode=str(self.segment_mode_combo.currentData() or "auto"))
-            show_split2 = detection.resolved_mode == "double"
-            self._set_split2_controls_visible(show_split2)
-            freq_min = float(np.min(spectrum.freq_hz))
-            freq_max = float(np.max(spectrum.freq_hz))
-            self.segment_split1_freq_edit.setPlaceholderText(f"{freq_min:.3g} - {freq_max:.3g}")
-            self.segment_split2_freq_edit.setPlaceholderText(f"{freq_min:.3g} - {freq_max:.3g}")
-            self.segment_split2_freq_edit.setEnabled(enabled and show_split2)
+    def _update_arc_label(self, spectrum: SpectrumData, arc_num: int, start: int, end: int) -> None:
+        """Update a compact arc label: idx start-end | freq_start -> freq_end Hz | count pt."""
+        f0 = self._format_arc_frequency(self._arc_freq_for_index(spectrum, start))
+        f1 = self._format_arc_frequency(self._arc_freq_for_index(spectrum, end))
+        pts = max(end - start + 1, 0)
+        text = f"弧{arc_num}: idx {start}-{end} | {f0} -> {f1} Hz | {pts} pt"
+        if arc_num == 1:
+            self.arc1_label.setText(text)
         else:
-            self._set_split2_controls_visible(False)
-    def _prime_segment_controls(self, spectrum: SpectrumData) -> None:
-        self._refresh_segment_controls_state(spectrum)
-        if not self._is_zview_template_selected():
+            self.arc2_label.setText(text)
+    def _prime_arc_sliders(self, spectrum: SpectrumData) -> None:
+        """Initialize arc sliders to the full data range."""
+        if pg is None:
             return
-        detection = detect_segments(spectrum, mode=str(self.segment_mode_combo.currentData() or "auto"))
-        self._sync_segment_controls_from_detection(spectrum, detection)
-        self._update_split_info_labels(spectrum, detection)
-    def _detect_segments_for_current(self) -> None:
-        spectrum = self._current_spectrum()
-        if spectrum is None:
-            return
-        self._prime_segment_controls(spectrum)
-        detection = self._current_segment_hint(spectrum)
-        if detection is not None:
-            self.state.segment_hints[spectrum.display_name] = detection
-        self._refresh_segment_preview_only(spectrum)
-    def _current_segment_hint(self, spectrum: SpectrumData) -> SegmentDetection | None:
+        n = spectrum.n_points
+        # Arc 1: full range
+        with QSignalBlocker(self.arc1_slider):
+            self.arc1_slider.setRange(0, n - 1)
+            self.arc1_slider.setValue(0, n - 1)
+        # Arc 2: full range (only visible for dual arc)
+        with QSignalBlocker(self.arc2_slider):
+            self.arc2_slider.setRange(0, n - 1)
+            self.arc2_slider.setValue(0, n - 1)
+        self._set_arc2_visible(self._resolve_segment_mode() == "double")
+        self._update_arc_info_labels(spectrum)
+    def _build_arc_ranges(self, spectrum: SpectrumData) -> list[ArcRange] | None:
+        """Build ArcRange list from current arc sliders."""
         if not self._is_zview_template_selected():
             return None
-        requested_mode = str(self.segment_mode_combo.currentData() or "auto")
-        stored_hint = self.state.segment_hints.get(spectrum.display_name)
-        if stored_hint is not None and stored_hint.requested_mode == requested_mode:
-            return stored_hint
-        base_detection = detect_segments(spectrum, mode=requested_mode)
-        try:
-            split1_freq = float(self.segment_split1_freq_edit.text()) if self.segment_split1_freq_edit.text() else None
-        except ValueError:
-            split1_freq = None
-        try:
-            split2_freq = float(self.segment_split2_freq_edit.text()) if self.segment_split2_freq_edit.text() else None
-        except ValueError:
-            split2_freq = None
-        split1 = self._segment_index_for_frequency(spectrum, split1_freq)
-        split2 = self._segment_index_for_frequency(spectrum, split2_freq)
-        split1, split2, _ = self._sanitize_segment_indices(spectrum, requested_mode, split1, split2, base_detection)
-        return detect_segments(
-            spectrum,
-            mode=requested_mode,
-            manual_split1=split1,
-            manual_split2=split2,
-        )
-    def _on_segment_frequency_edited(self, split_role: str) -> None:
-        if self._segment_control_sync:
-            return
-        spectrum = self._current_spectrum(silent=True)
-        if spectrum is None or not self._is_zview_template_selected():
-            return
-        requested_mode = str(self.segment_mode_combo.currentData() or "auto")
-        base_detection = detect_segments(spectrum, mode=requested_mode)
-        edit1 = self.segment_split1_freq_edit.text().strip()
-        edit2 = self.segment_split2_freq_edit.text().strip()
-        try:
-            split1 = self._segment_index_for_frequency(spectrum, float(edit1)) if edit1 else None
-        except ValueError:
-            split1 = None
-        try:
-            split2 = self._segment_index_for_frequency(spectrum, float(edit2)) if edit2 else None
-        except ValueError:
-            split2 = None
-        split1, split2, _ = self._sanitize_segment_indices(spectrum, requested_mode, split1, split2, base_detection)
-        detection = detect_segments(spectrum, mode=requested_mode, manual_split1=split1, manual_split2=split2)
-        self.state.segment_hints[spectrum.display_name] = detection
-        self._sync_segment_controls_from_detection(spectrum, detection)
-        self._refresh_segment_preview_only(spectrum, detection)
+        s1, e1 = self.arc1_slider.value()
+        ranges = [ArcRange(start=s1, end=e1)]
+        if self._resolve_segment_mode() == "double":
+            s2, e2 = self.arc2_slider.value()
+            ranges.append(ArcRange(start=s2, end=e2))
+        return ranges
     def _refresh_fit_for_current_selection(self) -> None:
         spectrum = self._current_spectrum(silent=True)
-        self._refresh_segment_controls_state(spectrum)
-        if spectrum is not None and self._is_zview_template_selected() and not self._segment_drag_active:
-            self._prime_segment_controls(spectrum)
-        else:
-            self._update_split_info_labels(spectrum)
+        mode = self._resolve_segment_mode()
+        self.segment_mode_label.setText(f"分段模式: {mode} (由电路模板决定)")
+        self._set_arc2_visible(mode == "double")
+        if spectrum is not None and self._is_zview_template_selected():
+            self._prime_arc_sliders(spectrum)
         if spectrum is not None and self._current_interface_id() == "fitInterface":
             self._refresh_fit_view(spectrum)
         self._update_global_status()
-    def _update_split_info_labels(
-        self,
-        spectrum: SpectrumData | None = None,
-        detection: SegmentDetection | None = None,
-    ) -> None:
+    def _update_arc_info_labels(self, spectrum: SpectrumData | None = None) -> None:
         if spectrum is None or not self._is_zview_template_selected():
-            self.segment_mode_status.setText("Segment mode: unavailable")
-            self.segment_peak_info_label.setText("Peaks: -")
-            self.segment_arc1_label.setText("Arc1: -")
-            self.segment_arc2_label.setText("Arc2: -")
-            self.segment_tail_label.setText("Tail: -")
-            self._set_split2_controls_visible(False)
+            self.segment_peak_info_label.setText("??: -")
+            self.segment_arc1_label.setText("?1: -")
+            self.segment_arc2_label.setText("?2: -")
+            self.segment_tail_label.setText("??: -")
             return
-        detection = detection or self._current_segment_hint(spectrum)
-        if detection is None:
-            self.segment_mode_status.setText("Segment mode: unavailable")
-            self.segment_peak_info_label.setText("Peaks: -")
-            self.segment_arc1_label.setText("Arc1: -")
-            self.segment_arc2_label.setText("Arc2: -")
-            self.segment_tail_label.setText("Tail: -")
-            self._set_split2_controls_visible(False)
+        ranges = self._build_arc_ranges(spectrum)
+        if not ranges:
+            self.segment_peak_info_label.setText("??: -")
+            self.segment_arc1_label.setText("?1: -")
+            self.segment_arc2_label.setText("?2: -")
+            self.segment_tail_label.setText("??: -")
             return
-        self._set_split2_controls_visible(detection.resolved_mode == "double")
-        peak_bits = [
-            f"p{i + 1}=idx {peak} @ {self._format_segment_frequency(self._segment_freq_for_index(spectrum, peak))} Hz"
-            for i, peak in enumerate(detection.peak_indices)
-        ]
-        self.segment_mode_status.setText(
-            f"Segment mode: {detection.requested_mode} -> {detection.resolved_mode}"
-        )
-        self.segment_peak_info_label.setText("Peaks: " + (", ".join(peak_bits) if peak_bits else "-"))
+        minus_z = spectrum.minus_z_imag_ohm
+        peak_bits = []
+        for i, arc in enumerate(ranges):
+            sl = slice(arc.start, arc.end + 1)
+            if sl.stop <= sl.start:
+                continue
+            pk = arc.start + int(np.argmax(minus_z[sl]))
+            freq = self._arc_freq_for_index(spectrum, pk)
+            peak_bits.append(f"p{i+1}=idx {pk} @ {self._format_arc_frequency(freq)} Hz")
+        self.segment_peak_info_label.setText("??: " + (", ".join(peak_bits) if peak_bits else "-"))
+
         def region_text(name: str, start: int, stop: int) -> str:
-            start_freq = self._format_segment_frequency(self._segment_freq_for_index(spectrum, start))
-            stop_freq = self._format_segment_frequency(self._segment_freq_for_index(spectrum, stop))
-            points = max(stop - start + 1, 0)
-            return f"{name}: idx {start}-{stop} | {start_freq} -> {stop_freq} Hz | {points} pt"
-        split_indices = list(detection.split_indices)
-        if detection.resolved_mode == "double" and len(split_indices) >= 2:
-            split1, split2 = split_indices[:2]
-            self.segment_arc1_label.setText(region_text("Arc1", 0, split1))
-            self.segment_arc2_label.setText(region_text("Arc2", split1, split2))
-            self.segment_tail_label.setText(region_text("Tail", split2, spectrum.n_points - 1))
-        elif split_indices:
-            split1 = split_indices[0]
-            self.segment_arc1_label.setText(region_text("Arc1", 0, split1))
-            self.segment_arc2_label.setText("Arc2: -")
-            self.segment_tail_label.setText(region_text("Tail", split1, spectrum.n_points - 1))
-        else:
-            self.segment_arc1_label.setText("Arc1: -")
-            self.segment_arc2_label.setText("Arc2: -")
-            self.segment_tail_label.setText("Tail: -")
-    def _clear_segment_overlay(self, *, keep_handles: bool = False) -> None:
+            f0 = self._format_arc_frequency(self._arc_freq_for_index(spectrum, start))
+            f1 = self._format_arc_frequency(self._arc_freq_for_index(spectrum, stop))
+            pts = max(stop - start + 1, 0)
+            return f"{name}: idx {start}-{stop} | {f0} -> {f1} Hz | {pts} pt"
+
+        if len(ranges) >= 2 and self._resolve_segment_mode() == "double":
+            a1, a2 = ranges[0], ranges[1]
+            arc2_start = min(a1.end + 1, spectrum.n_points - 1)
+            tail_start = a2.end + 1
+            self.segment_arc1_label.setText(region_text("?1", 0, a1.end))
+            if arc2_start <= a2.end:
+                self.segment_arc2_label.setText(region_text("?2", arc2_start, a2.end))
+            else:
+                self.segment_arc2_label.setText("?2: -")
+            if tail_start < spectrum.n_points:
+                self.segment_tail_label.setText(region_text("??", tail_start, spectrum.n_points - 1))
+            else:
+                self.segment_tail_label.setText("??: -")
+        elif ranges:
+            a1 = ranges[0]
+            tail_start = a1.end + 1
+            self.segment_arc1_label.setText(region_text("?1", 0, a1.end))
+            self.segment_arc2_label.setText("?2: -")
+            if tail_start < spectrum.n_points:
+                self.segment_tail_label.setText(region_text("??", tail_start, spectrum.n_points - 1))
+            else:
+                self.segment_tail_label.setText("??: -")
+    def _clear_segment_overlay(self) -> None:
         if pg is None or not hasattr(self, "fit_nyquist_plot"):
             self._segment_overlay_items = []
-            if not keep_handles:
-                self._segment_handles = {}
             return
         seen: set[int] = set()
-        items = list(self._segment_overlay_items)
-        if not keep_handles:
-            items.extend(self._segment_handles.values())
-        for item in items:
+        for item in list(self._segment_overlay_items):
             if item is None or id(item) in seen:
                 continue
             seen.add(id(item))
             try:
                 self.fit_nyquist_plot.removeItem(item)
             except Exception:
-                pass
+                logger.debug("Failed to remove fit_nyquist_plot item", exc_info=True)
         self._segment_overlay_items = []
-        if not keep_handles:
-            self._segment_handles = {}
-    def _render_segment_overlay(self, spectrum: SpectrumData, segment_hint: SegmentDetection | None) -> None:
-        self._clear_segment_overlay(keep_handles=True)
-        if pg is None or segment_hint is None:
-            self._clear_segment_overlay()
+    def _render_arc_overlay(self, spectrum: SpectrumData) -> None:
+        """Draw colored lines on the Nyquist plot for each arc region."""
+        self._clear_segment_overlay()
+        if pg is None:
             return
-        split_indices = list(segment_hint.split_indices)
+        ranges = self._build_arc_ranges(spectrum)
+        if not ranges:
+            return
         sections: list[tuple[int, int, str]] = []
-        handle_specs: list[tuple[str, int, str]] = []
-        if segment_hint.resolved_mode == "double" and len(split_indices) >= 2:
-            split1, split2 = split_indices[:2]
+        if len(ranges) >= 2 and self._resolve_segment_mode() == "double":
+            a1, a2 = ranges[0], ranges[1]
             sections = [
-                (0, split1, "#ff9500"),
-                (split1, split2, "#af52de"),
-                (split2, spectrum.n_points - 1, "#ff3b30"),
+                (0, a1.end, "#ff9500"),
+                (a1.end + 1, a2.end, "#af52de"),
+                (a2.end + 1, spectrum.n_points - 1, "#ff3b30"),
             ]
-            handle_specs = [("split1", split1, "#ffd60a"), ("split2", split2, "#ff453a")]
-        elif split_indices:
-            split1 = split_indices[0]
-            sections = [(0, split1, "#ff9500"), (split1, spectrum.n_points - 1, "#ff3b30")]
-            handle_specs = [("split1", split1, "#ffd60a")]
+        elif ranges:
+            a1 = ranges[0]
+            sections = [(0, a1.end, "#ff9500"), (a1.end + 1, spectrum.n_points - 1, "#ff3b30")]
         for start, stop, color in sections:
+            if stop <= start:
+                continue
             xs = spectrum.z_real_ohm[start : stop + 1]
             ys = spectrum.minus_z_imag_ohm[start : stop + 1]
             item = self.fit_nyquist_plot.plot(xs, ys, pen=pg.mkPen(color=color, width=2, style=Qt.DashLine))
             self._segment_overlay_items.append(item)
-        active_roles = {role for role, _, _ in handle_specs}
-        for role, handle in list(self._segment_handles.items()):
-            if role in active_roles:
-                continue
-            try:
-                self.fit_nyquist_plot.removeItem(handle)
-            except Exception:
-                pass
-            self._segment_handles.pop(role, None)
-        for role, index, color in handle_specs:
-            x = float(spectrum.z_real_ohm[index])
-            y = float(spectrum.minus_z_imag_ohm[index])
-            handle = self._segment_handles.get(role)
-            if handle is None:
-                handle = pg.TargetItem(
-                    pos=(x, y),
-                    size=14,
-                    symbol="o",
-                    pen=pg.mkPen(color=color, width=1.8),
-                    hoverPen=pg.mkPen(color="#ffffff", width=2.2),
-                    brush=pg.mkBrush(QColor(color)),
-                    hoverBrush=pg.mkBrush(QColor("#ffffff")),
-                    movable=True,
-                )
-                handle.sigPositionChanged.connect(lambda _, split_role=role: self._on_segment_handle_moved(split_role))
-                handle.sigPositionChangeFinished.connect(lambda _, split_role=role: self._on_segment_handle_released(split_role))
-                self.fit_nyquist_plot.addItem(handle)
-                self._segment_handles[role] = handle
-            self._segment_handle_sync = True
-            try:
-                handle.setPos((x, y))
-            finally:
-                self._segment_handle_sync = False
-    def _refresh_segment_preview_only(
-        self,
-        spectrum: SpectrumData,
-        detection: SegmentDetection | None = None,
-    ) -> None:
-        detection = detection or self._current_segment_hint(spectrum)
-        if detection is None:
-            self._clear_segment_overlay()
-            return
-        self._sync_segment_controls_from_detection(spectrum, detection)
-        self._update_split_info_labels(spectrum, detection)
+    def _update_arc_preview(self, spectrum: SpectrumData) -> None:
+        self._update_arc_info_labels(spectrum)
         if pg is not None:
-            self._render_segment_overlay(spectrum, detection)
-    def _ensure_fit_plot_click_handler(self) -> None:
-        if pg is None or self._fit_plot_click_connected:
-            return
-        self.fit_nyquist_plot.scene().sigMouseClicked.connect(self._on_fit_plot_scene_clicked)
-        self._fit_plot_click_connected = True
-    def _move_segment_to_index(
-        self,
-        spectrum: SpectrumData,
-        split_role: str,
-        candidate_index: int,
-        *,
-        commit: bool,
-    ) -> None:
-        requested_mode = str(self.segment_mode_combo.currentData() or "auto")
-        base_detection = detect_segments(spectrum, mode=requested_mode)
-        current_hint = self._current_segment_hint(spectrum) or base_detection
-        current_split1 = current_hint.split_indices[0] if current_hint.split_indices else None
-        current_split2 = current_hint.split_indices[1] if len(current_hint.split_indices) > 1 else None
-        if split_role == "split1":
-            current_split1 = candidate_index
-        else:
-            current_split2 = candidate_index
-        split1, split2, _ = self._sanitize_segment_indices(
-            spectrum,
-            requested_mode,
-            current_split1,
-            current_split2,
-            base_detection,
-        )
-        detection = detect_segments(spectrum, mode=requested_mode, manual_split1=split1, manual_split2=split2)
-        self._segment_drag_active = not commit
-        self._refresh_segment_preview_only(spectrum, detection)
-        self._segment_drag_active = False
-        if commit:
-            self._fit_current()
-    def _nearest_segment_index_from_handle(self, spectrum: SpectrumData, split_role: str) -> int | None:
-        handle = self._segment_handles.get(split_role)
-        if handle is None:
-            return None
-        point = handle.pos()
-        x_pos = float(point.x())
-        y_pos = float(point.y())
-        dists = (spectrum.z_real_ohm - x_pos) ** 2 + (spectrum.minus_z_imag_ohm - y_pos) ** 2
-        return int(np.argmin(dists))
-    def _on_segment_handle_moved(self, split_role: str) -> None:
-        if self._segment_handle_sync:
-            return
-        spectrum = self._current_spectrum(silent=True)
-        if spectrum is None:
-            return
-        nearest_index = self._nearest_segment_index_from_handle(spectrum, split_role)
-        if nearest_index is None:
-            return
-        self._segment_handle_sync = True
-        try:
-            self._move_segment_to_index(spectrum, split_role, nearest_index, commit=False)
-        finally:
-            self._segment_handle_sync = False
-    def _on_segment_handle_released(self, split_role: str) -> None:
-        if self._segment_handle_sync:
-            return
-        spectrum = self._current_spectrum(silent=True)
-        if spectrum is None:
-            return
-        nearest_index = self._nearest_segment_index_from_handle(spectrum, split_role)
-        if nearest_index is None:
-            return
-        self._move_segment_to_index(spectrum, split_role, nearest_index, commit=True)
+            self._render_arc_overlay(spectrum)
     def _refresh_fit_view(self, spectrum: SpectrumData) -> None:
         key = str(self.template_combo.currentData())
         fit = self.state.fits.get((spectrum.display_name, key))
@@ -1325,17 +1074,15 @@ class MainWindow(MSFluentWindow):
 
         lines: list[str] = []
         detail_lines: list[str] = []
-        segment_hint = self._current_segment_hint(spectrum)
-        if segment_hint is not None:
-            self._sync_segment_controls_from_detection(spectrum, segment_hint)
-            detail_lines.extend(
-                [
-                    f"Segment mode: {segment_hint.requested_mode} -> {segment_hint.resolved_mode}",
-                    f"Peak indices: {', '.join(str(i) for i in segment_hint.peak_indices) or '-'}",
-                    f"Split indices: {', '.join(str(i) for i in segment_hint.split_indices) or '-'}",
-                    "",
-                ]
-            )
+        ranges = self._build_arc_ranges(spectrum)
+        if ranges:
+            minus_z = spectrum.minus_z_imag_ohm
+            for i, arc in enumerate(ranges):
+                sl = slice(arc.start, arc.end + 1)
+                if sl.stop > sl.start:
+                    pk = arc.start + int(np.argmax(minus_z[sl]))
+                    detail_lines.append(f"弧{i+1}: idx {arc.start}-{arc.end}, 峰 @ idx {pk}")
+            detail_lines.append("")
 
         if fit is None:
             lines.extend(
@@ -1348,22 +1095,13 @@ class MainWindow(MSFluentWindow):
             self.fit_text.setPlainText("\n".join(lines))
             if pg is not None:
                 self._reset_plot(self.fit_nyquist_plot, True)
+                self._reset_plot(self.fit_residual_plot)
+                self.fit_residual_plot.hide()
                 self._ensure_legend(self.fit_nyquist_plot)
-                self.fit_nyquist_plot.plot(
-                    spectrum.z_real_ohm,
-                    spectrum.minus_z_imag_ohm,
-                    pen=pg.mkPen("#0071e3", width=1.6),
-                    symbol="o",
-                    symbolSize=5,
-                    symbolBrush=pg.mkBrush(QColor("#5ac8fa")),
-                    name="实测数据",
-                )
-                self._ensure_fit_plot_click_handler()
-                if segment_hint is not None:
-                    self._refresh_segment_preview_only(spectrum, segment_hint)
-                else:
-                    self._clear_segment_overlay()
+                self._render_fit_scatter_with_mask(spectrum)
+                self._update_arc_preview(spectrum)
                 self._set_nyquist_axes(self.fit_nyquist_plot, spectrum.z_real_ohm, spectrum.minus_z_imag_ohm)
+            self._update_range_labels(spectrum)
             self._update_global_status()
             return
 
@@ -1388,9 +1126,20 @@ class MainWindow(MSFluentWindow):
             lines.extend(error_lines)
 
         message = (fit.message or "").strip()
+        diagnosis_explanation = (getattr(fit, "diagnosis_explanation", "") or "").strip()
+        diagnosis_type = (getattr(fit, "diagnosis_type", "") or "").strip()
+        diagnosis_severity = (getattr(fit, "diagnosis_severity", "") or "").strip()
+        diagnosis_suggestions = list(getattr(fit, "diagnosis_suggestions", []) or [])
+        note_head = diagnosis_explanation or (message.split(" [", 1)[0].strip() if message else "")
+        if note_head:
+            lines.extend(["", "??", f"  {note_head}"])
+        if diagnosis_explanation:
+            detail_lines.extend(["", f"??: {diagnosis_type or 'n/a'} ({diagnosis_severity or 'n/a'})", f"  {diagnosis_explanation}"])
+            if diagnosis_suggestions:
+                detail_lines.append("??")
+                detail_lines.extend(f"  - {text}" for text in diagnosis_suggestions[:3])
         if message:
-            lines.extend(["", "备注", f"  {message.split(';', 1)[0].strip()}"])
-            detail_lines.extend(["", f"原始消息: {message}"])
+            detail_lines.extend(["", f"????: {message}"])
 
         advanced_names = ("Rsei_global", "Rct_global", "Wo_R", "Wo_T", "Wo_P", "CPE_T", "CPE_P", "Q1", "n1", "Q2", "n2")
         advanced_values = [f"  {name} = {fit.parameters[name]:.8g}" for name in advanced_names if name in fit.parameters]
@@ -1398,11 +1147,24 @@ class MainWindow(MSFluentWindow):
             detail_lines.extend(["", "高级参数", *advanced_values])
 
         statistics_lines = []
-        for name in ("aic", "bic", "chi2_reduced"):
+        for name in ("aic", "aicc", "bic", "chi2_reduced"):
             value = fit.statistics.get(name, float("nan"))
             statistics_lines.append(f"  {name} = {value:.8g}")
+        corr_max = getattr(fit, "correlation_matrix_max", 0.0)
+        if np.isfinite(float(corr_max)) and float(corr_max) > 0:
+            statistics_lines.append(f"  correlation_matrix_max = {float(corr_max):.6g}")
         if statistics_lines:
             detail_lines.extend(["", "拟合统计", *statistics_lines])
+
+        ci_map = getattr(fit, "confidence_intervals", {})
+        if ci_map:
+            ci_lines = [f"  {name}: [{low:.8g}, {high:.8g}]" for name, (low, high) in ci_map.items()]
+            detail_lines.extend(["", "95% CI", *ci_lines])
+        # append range info to detail
+        mask = self._get_point_mask(spectrum)
+        masked_count = int((~mask).sum())
+        if masked_count > 0:
+            detail_lines.extend(["", f"拟合范围: 已排除 {masked_count} 个点 (共 {spectrum.n_points} 个)"])
 
         text_lines = list(lines)
         if detail_lines:
@@ -1410,25 +1172,15 @@ class MainWindow(MSFluentWindow):
         self.fit_text.setPlainText("\n".join(text_lines))
 
         if pg is None:
+            self._update_range_labels(spectrum)
             self._update_global_status()
             return
 
         self._reset_plot(self.fit_nyquist_plot, True)
+        self._reset_plot(self.fit_residual_plot)
         self._ensure_legend(self.fit_nyquist_plot)
-        self.fit_nyquist_plot.plot(
-            spectrum.z_real_ohm,
-            spectrum.minus_z_imag_ohm,
-            pen=pg.mkPen("#0071e3", width=1.6),
-            symbol="o",
-            symbolSize=5,
-            symbolBrush=pg.mkBrush(QColor("#5ac8fa")),
-            name="实测数据",
-        )
-        self._ensure_fit_plot_click_handler()
-        if segment_hint is not None:
-            self._refresh_segment_preview_only(spectrum, segment_hint)
-        else:
-            self._clear_segment_overlay()
+        self._render_fit_scatter_with_mask(spectrum)
+        self._update_arc_preview(spectrum)
 
         if fit.predicted_real_ohm is not None and fit.predicted_imag_ohm is not None:
             self.fit_nyquist_plot.plot(
@@ -1444,28 +1196,10 @@ class MainWindow(MSFluentWindow):
             )
         else:
             self._set_nyquist_axes(self.fit_nyquist_plot, spectrum.z_real_ohm, spectrum.minus_z_imag_ohm)
+        self._refresh_fit_residual_plot(spectrum, fit)
 
+        self._update_range_labels(spectrum)
         self._update_global_status()
-    def _on_fit_plot_scene_clicked(self, ev) -> None:
-        if ev.button() != Qt.LeftButton:
-            return
-        if not self._is_zview_template_selected():
-            return
-        segment_hint = self._current_segment_hint(self._current_spectrum(silent=True)) if self._current_spectrum(silent=True) is not None else None
-        pos = self.fit_nyquist_plot.plotItem.vb.mapSceneToView(ev.scenePos())
-        x_clicked = pos.x()
-        y_clicked = pos.y()
-        spectrum = self._current_spectrum(silent=True)
-        if spectrum is None:
-            return
-        dists = (spectrum.z_real_ohm - x_clicked)**2 + (spectrum.minus_z_imag_ohm - y_clicked)**2
-        nearest_idx = int(np.argmin(dists))
-        if segment_hint is None or segment_hint.resolved_mode == "single" or len(segment_hint.split_indices) < 2:
-            self._move_segment_to_index(spectrum, "split1", nearest_idx, commit=True)
-            return
-        idx1, idx2 = segment_hint.split_indices[:2]
-        split_role = "split1" if abs(nearest_idx - idx1) <= abs(nearest_idx - idx2) else "split2"
-        self._move_segment_to_index(spectrum, split_role, nearest_idx, commit=True)
     def _toggle_fit_detail(self) -> None:
         visible = not self.fit_detail_text.isVisible()
         self.fit_detail_text.setVisible(visible)
@@ -1475,10 +1209,10 @@ class MainWindow(MSFluentWindow):
         if spectrum is None:
             return
         template_key = str(self.template_combo.currentData())
-        segment_hint = self._current_segment_hint(spectrum)
+        arc_ranges = self._build_arc_ranges(spectrum)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            fit = fit_spectrum(spectrum, template_key, segment_hint=segment_hint)
+            fit = fit_spectrum(spectrum, template_key, arc_ranges=arc_ranges)
         finally:
             QApplication.restoreOverrideCursor()
         self.state.fits[(spectrum.display_name, template_key)] = fit
@@ -1658,6 +1392,7 @@ class MainWindow(MSFluentWindow):
         try:
             clicked_x = int(round(points[0].pos().x()))
         except Exception:
+            logger.debug("Failed to get clicked x position from trend plot", exc_info=True)
             return
         summary = self.state.batch_summary
         if summary is None:
@@ -1809,8 +1544,9 @@ class MainWindow(MSFluentWindow):
         try:
             from eismaster.exporters import write_drt_only_export
             write_drt_only_export(result.output_dir / "drt_matrix.csv", self._last_drt_spectra, result.output_dir, fmt="csv")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("DRT export failed: %s", exc, exc_info=True)
+            self._warn(f"DRT 矩阵导出失败: {exc}")
         lines = [
             f"??: {' '.join(result.command)}",
             "",
@@ -1930,11 +1666,135 @@ class MainWindow(MSFluentWindow):
         if not keep_legend and plot.plotItem.legend:
             plot.plotItem.legend.setParentItem(None)
             plot.plotItem.legend = None
+    def _refresh_fit_residual_plot(self, spectrum: SpectrumData, fit: FitOutcome | None) -> None:
+        if pg is None:
+            return
+        plot = self.fit_residual_plot
+        self._reset_plot(plot)
+        if (
+            fit is None
+            or fit.predicted_real_ohm is None
+            or fit.predicted_imag_ohm is None
+            or fit.predicted_real_ohm.shape != spectrum.z_real_ohm.shape
+            or fit.predicted_imag_ohm.shape != spectrum.z_imag_ohm.shape
+        ):
+            plot.hide()
+            return
+        z_mod = np.hypot(spectrum.z_real_ohm, spectrum.z_imag_ohm)
+        z_mod = np.where(z_mod <= 1e-12, 1e-12, z_mod)
+        residual_pct = (
+            np.hypot(
+                spectrum.z_real_ohm - fit.predicted_real_ohm,
+                spectrum.z_imag_ohm - fit.predicted_imag_ohm,
+            )
+            / z_mod
+            * 100.0
+        )
+        valid = np.isfinite(spectrum.freq_hz) & np.isfinite(residual_pct) & (spectrum.freq_hz > 0)
+        if not np.any(valid):
+            plot.hide()
+            return
+        plot.show()
+        plot.plot(
+            spectrum.freq_hz[valid],
+            residual_pct[valid],
+            pen=None,
+            symbol="o",
+            symbolSize=5,
+            symbolBrush="#ff9f0a",
+            symbolPen=pg.mkPen("#ff9f0a"),
+        )
     def _ensure_legend(self, plot) -> None:
         if pg is not None and plot.plotItem.legend is None:
             plot.addLegend(offset=(12, 12))
-    def _plot_segment_preview(self, spectrum: SpectrumData, segment_hint: SegmentDetection) -> None:
-        self._render_segment_overlay(spectrum, segment_hint)
+    def _plot_segment_preview(self, spectrum: SpectrumData) -> None:
+        self._render_arc_overlay(spectrum)
+    # ---- Arc range selection ------------------------------------------------
+    def _arc_mask_from_sliders(self, spectrum: SpectrumData) -> np.ndarray:
+        """Build a point_mask from arc sliders.
+
+        Arc sliders define split boundaries, not the overall fit window. The
+        low-frequency tail after the final arc end remains part of the fit.
+        """
+        ranges = self._build_arc_ranges(spectrum)
+        n = spectrum.n_points
+        if not ranges:
+            return np.ones(n, dtype=bool)
+        return np.ones(n, dtype=bool)
+    def _get_point_mask(self, spectrum: SpectrumData) -> np.ndarray:
+        """Return the current point_mask for a spectrum, derived from arc sliders."""
+        return self._arc_mask_from_sliders(spectrum)
+    def _reset_arc1_range(self) -> None:
+        """Reset arc1 slider to full range."""
+        spectrum = self._current_spectrum(silent=True)
+        if spectrum is None:
+            return
+        with QSignalBlocker(self.arc1_slider):
+            self.arc1_slider.setValue(0, spectrum.n_points - 1)
+        self._update_arc_preview(spectrum)
+        self._update_range_labels(spectrum)
+    def _reset_arc2_range(self) -> None:
+        """Reset arc2 slider to full range."""
+        spectrum = self._current_spectrum(silent=True)
+        if spectrum is None:
+            return
+        with QSignalBlocker(self.arc2_slider):
+            self.arc2_slider.setValue(0, spectrum.n_points - 1)
+        self._update_arc_preview(spectrum)
+        self._update_range_labels(spectrum)
+
+    # ── Arc 1 callbacks ─────────────────────────────────────────────
+    def _on_arc1_slider_changed(self, start: int, end: int) -> None:
+        spectrum = self._current_spectrum(silent=True)
+        if spectrum is None:
+            return
+        if start > end:
+            start, end = end, start
+        self._update_arc_label(spectrum, 1, start, end)
+        self._update_arc_preview(spectrum)
+        self._update_range_labels(spectrum)
+    # ── Arc 2 callbacks ─────────────────────────────────────────────
+    def _on_arc2_slider_changed(self, start: int, end: int) -> None:
+        spectrum = self._current_spectrum(silent=True)
+        if spectrum is None:
+            return
+        if start > end:
+            start, end = end, start
+        self._update_arc_label(spectrum, 2, start, end)
+        self._update_arc_preview(spectrum)
+        self._update_range_labels(spectrum)
+
+    def _update_range_labels(self, spectrum: SpectrumData) -> None:
+        """Update arc slider labels based on current values."""
+        s1, e1 = self.arc1_slider.value()
+        self._update_arc_label(spectrum, 1, s1, e1)
+        if self._resolve_segment_mode() == "double":
+            s2, e2 = self.arc2_slider.value()
+            self._update_arc_label(spectrum, 2, s2, e2)
+
+    def _render_fit_scatter_with_mask(self, spectrum: SpectrumData) -> None:
+        """Render the data scatter on fit_nyquist_plot."""
+        if pg is None:
+            return
+        # clear previous scatter items
+        for item in self._range_scatter_items:
+            try:
+                self.fit_nyquist_plot.removeItem(item)
+            except Exception:
+                pass
+        self._range_scatter_items = []
+        # plot the full spectrum as a blue line
+        item_line = self.fit_nyquist_plot.plot(
+            spectrum.z_real_ohm,
+            spectrum.minus_z_imag_ohm,
+            pen=pg.mkPen("#0071e3", width=1.6),
+            symbol="o",
+            symbolSize=5,
+            symbolBrush=pg.mkBrush(QColor("#5ac8fa")),
+            name="实测数据",
+        )
+        self._range_scatter_items.append(item_line)
+
     def _fit_error_lines(self, fit: FitOutcome) -> list[str]:
         lines: list[str] = []
         for key, label in self._primary_error_pairs(fit):

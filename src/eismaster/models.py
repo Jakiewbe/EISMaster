@@ -88,6 +88,12 @@ class FitOutcome:
     masked_points: int = 0
     preprocess_actions: list[str] = field(default_factory=list)
     fallback_from: Optional[str] = None
+    confidence_intervals: dict[str, tuple[float, float]] = field(default_factory=dict)
+    correlation_matrix_max: float = 0.0
+    diagnosis_type: str = ""
+    diagnosis_severity: str = ""
+    diagnosis_explanation: str = ""
+    diagnosis_suggestions: list[str] = field(default_factory=list)
 
     @property
     def predicted_impedance(self) -> Optional[np.ndarray]:

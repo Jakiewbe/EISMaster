@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,9 +11,32 @@ from typing import Iterable
 from eismaster.models import SpectrumData
 
 
+_COMMON_MATLAB_PATHS = [
+    r"C:\Program Files\MATLAB\R2024b\bin\matlab.exe",
+    r"C:\Program Files\MATLAB\R2024a\bin\matlab.exe",
+    r"C:\Program Files\MATLAB\R2023b\bin\matlab.exe",
+    r"C:\Program Files\MATLAB\R2023a\bin\matlab.exe",
+    r"D:\Matlabs\bin\matlab.exe",
+]
+
+
+def _find_matlab_exe() -> str:
+    """Locate MATLAB executable via env var, PATH, or common install paths."""
+    env_exe = os.environ.get("EISMASTER_MATLAB_EXE")
+    if env_exe and Path(env_exe).is_file():
+        return env_exe
+    path_exe = shutil.which("matlab")
+    if path_exe:
+        return path_exe
+    for candidate in _COMMON_MATLAB_PATHS:
+        if Path(candidate).is_file():
+            return candidate
+    return ""
+
+
 @dataclass()
 class MatlabDrtConfig:
-    matlab_exe: str = r"D:\Matlabs\bin\matlab.exe"
+    matlab_exe: str = field(default_factory=_find_matlab_exe)
     drttools_dir: str = field(default_factory=lambda: str((_resource_root() / "matlab-DRTtools-local").resolve()))
     method_tag: str = "simple"
     drt_type: int = 2
