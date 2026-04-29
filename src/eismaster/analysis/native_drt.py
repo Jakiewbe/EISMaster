@@ -145,7 +145,7 @@ def find_drt_peaks(tau: np.ndarray, gamma: np.ndarray, min_prominence_pct: float
         left_idx = int(left_valleys[-1]) if len(left_valleys) > 0 else 0
         right_idx = int(right_valleys[0]) if len(right_valleys) > 0 else len(gamma) - 1
 
-        r_peak = float(np.trapz(gamma[left_idx : right_idx + 1], x=np.log(tau[left_idx : right_idx + 1])))
+        r_peak = float(np.trapezoid(gamma[left_idx : right_idx + 1], x=np.log(tau[left_idx : right_idx + 1])))
 
         try:
             width_results = signal.peak_widths(gamma, [p_idx], rel_height=0.5)

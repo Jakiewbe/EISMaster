@@ -36,7 +36,7 @@ for dll_name in (
 
 
 a = Analysis(
-    ["launch_eismaster.py"],
+    ["src/eismaster/app.py"],
     pathex=[str(ROOT / "src"), str(ROOT)],
     binaries=binaries,
     datas=datas,

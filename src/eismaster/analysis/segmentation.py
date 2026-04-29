@@ -217,7 +217,7 @@ def _sanitize_double_controls(
 
 @dataclass(frozen=True)
 class ArcRange:
-    """User-defined arc range from a RangeSlider.
+    """User-defined arc range from a SplitSlider.
 
     Attributes:
         start: First index of the arc region.

@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Optional
-import typing
 from collections.abc import Iterable
 
 
@@ -178,10 +177,15 @@ def parse_chi_bin(path: Path) -> SpectrumData:
         raise ValueError(f"{path.name} does not look like a CHI impedance binary file")
 
     count = _extract_record_count(raw)
-    if count is None:
+    data_start, data_count = _find_trailing_binary_record_run(raw)
+    if data_count is None and count is None:
         raise ValueError(f"Unable to determine record count for {path.name}")
-    start = len(raw) - count * 16
-    if start < 0:
+    if data_count is not None and (count is None or data_count > count):
+        start = data_start
+        count = data_count
+    else:
+        start = len(raw) - count * 16
+    if start is None or count is None or start < 0:
         raise ValueError(f"Invalid record count for {path.name}")
 
     rows: list[tuple[float, float, float, Optional[float], Optional[float]]] = []
@@ -273,6 +277,35 @@ def _extract_record_count(raw: bytes) -> Optional[int]:
     if candidates and len(set(candidates)) == 1:
         return candidates[0]
     return candidates[0] if candidates else None
+
+
+def _find_trailing_binary_record_run(raw: bytes) -> tuple[Optional[int], Optional[int]]:
+    best_start = None
+    best_count = 0
+    for start in range(max(0, len(raw) - (len(raw) // 16) * 16), len(raw) - 16 + 1):
+        count = _count_binary_records_from(raw, start)
+        if count > best_count and start + count * 16 == len(raw):
+            best_start = start
+            best_count = count
+    if best_start is None or best_count < 5:
+        return None, None
+    return best_start, best_count
+
+
+def _count_binary_records_from(raw: bytes, start: int) -> int:
+    count = 0
+    prev_freq = math.inf
+    while start + (count + 1) * 16 <= len(raw):
+        freq_1, freq_2, z_real, z_imag = struct.unpack_from("<4f", raw, start + count * 16)
+        if not all(math.isfinite(value) for value in (freq_1, freq_2, z_real, z_imag)):
+            break
+        if freq_1 <= 0 or abs(freq_1 - freq_2) / max(freq_1, 1.0) > 1e-3:
+            break
+        if freq_1 > prev_freq * 1.05:
+            break
+        prev_freq = freq_1
+        count += 1
+    return count
 
 
 def _extract_bin_datetime(raw: bytes) -> Optional[datetime]:

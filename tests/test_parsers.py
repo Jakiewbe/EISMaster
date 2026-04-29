@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 import shutil
+import struct
 
 import numpy as np
 
@@ -45,6 +46,31 @@ class ParserTests(unittest.TestCase):
         np.testing.assert_allclose(bin_spectrum.freq_hz, txt_spectrum.freq_hz, rtol=1e-4, atol=5.0)
         np.testing.assert_allclose(bin_spectrum.z_real_ohm, txt_spectrum.z_real_ohm, rtol=1e-3, atol=0.05)
         np.testing.assert_allclose(bin_spectrum.z_imag_ohm, txt_spectrum.z_imag_ohm, rtol=1e-3, atol=0.5)
+
+    def test_bin_parser_uses_actual_trailing_record_run(self) -> None:
+        rows = [
+            (100_000.0, 100_000.0, 5.0, -0.20),
+            (50_000.0, 50_000.0, 5.2, -0.24),
+            (25_000.0, 25_000.0, 5.5, -0.31),
+            (10_000.0, 10_000.0, 5.9, -0.46),
+            (5_000.0, 5_000.0, 6.4, -0.70),
+            (1_000.0, 1_000.0, 7.1, -1.15),
+            (500.0, 500.0, 7.9, -1.65),
+            (100.0, 100.0, 9.0, -2.40),
+        ]
+        header = bytearray(0x280)
+        header[:26] = b"IMP A.C. Impedance CHI660F"
+        struct.pack_into("<H", header, 0x25E, 5)
+        raw = bytes(header) + b"".join(struct.pack("<4f", *row) for row in rows)
+        sample = self.tmp_root / "underreported_count.bin"
+        sample.write_bytes(raw)
+
+        spectrum = load_spectrum(sample)
+
+        self.assertEqual(spectrum.n_points, len(rows))
+        np.testing.assert_allclose(spectrum.freq_hz, [row[0] for row in rows], rtol=1e-6)
+        np.testing.assert_allclose(spectrum.z_real_ohm, [row[2] for row in rows], rtol=1e-6)
+        np.testing.assert_allclose(spectrum.z_imag_ohm, [row[3] for row in rows], rtol=1e-6)
 
     def test_fitting_smoke_for_single_semicircle_model(self) -> None:
         spectrum = load_spectrum(TXT_SAMPLE)
@@ -179,8 +205,10 @@ class ParserTests(unittest.TestCase):
         quality = assess_spectrum_quality(spectrum, run_kk=False)
         self.assertEqual(spectrum.acquired_label, "未知")
         self.assertEqual(quality.kk_message, "KK/Z-HIT 未执行。")
-        self.assertIn("状态: pass", quality.summary_lines())
-        self.assertIn("未发现明显质量问题。", quality.summary_lines())
+        summary = quality.summary_lines()
+        self.assertIn("状态: warn", summary)
+        self.assertIn("KK/Z-HIT: not_run - KK/Z-HIT 未执行。", summary)
+        self.assertTrue(any("可能异常点" in line for line in summary))
 
 
 if __name__ == "__main__":
