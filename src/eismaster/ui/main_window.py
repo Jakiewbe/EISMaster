@@ -1445,6 +1445,8 @@ class MainWindow(MSFluentWindow):
 
         self.state.fit_busy = True
         self.fit_current_btn.setEnabled(False)
+        self.fit_metric["value"].setText("正在拟合...")
+        self.fit_text.setPlainText("拟合正在后台运行，请稍候。")
         self._fit_thread = QThread(self)
         self._fit_worker = SingleFitWorker(spectrum, template_key, arc_ranges)
         self._fit_worker.moveToThread(self._fit_thread)
@@ -2124,4 +2126,3 @@ class MainWindow(MSFluentWindow):
             self.circuit_builder.show()
         except ImportError:
             QMessageBox.information(self, "Coming Soon", "Graph-based logic editor is under construction.")
-

@@ -9,10 +9,9 @@ ENV_ROOT = Path(sys.executable).resolve().parent
 LIB_BIN = ENV_ROOT / "Library" / "bin"
 
 datas = collect_data_files("eismaster")
-for folder_name in ("matlab_bridge", "matlab-DRTtools-local"):
-    folder = ROOT / folder_name
-    if folder.exists():
-        datas.append((str(folder), folder_name))
+matlab_bridge = ROOT / "matlab_bridge"
+if matlab_bridge.exists():
+    datas.append((str(matlab_bridge), "matlab_bridge"))
 
 hiddenimports = collect_submodules("qfluentwidgets") + collect_submodules(
     "pyqtgraph",
@@ -97,9 +96,7 @@ a = Analysis(
         # scipy 不需要的子模块
         "scipy.io",
         "scipy.constants",
-        "scipy.fft",
         "scipy.ndimage",
-        "scipy.spatial",
         # pandas 不需要的子模块
         "pandas.tests",
         # numpy 不需要的子模块

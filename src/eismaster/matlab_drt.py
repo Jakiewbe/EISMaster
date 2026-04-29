@@ -37,7 +37,7 @@ def _find_matlab_exe() -> str:
 @dataclass()
 class MatlabDrtConfig:
     matlab_exe: str = field(default_factory=_find_matlab_exe)
-    drttools_dir: str = field(default_factory=lambda: str((_resource_root() / "matlab-DRTtools-local").resolve()))
+    drttools_dir: str = field(default_factory=lambda: str(_default_drttools_dir().resolve()))
     method_tag: str = "simple"
     drt_type: int = 2
     lambda_value: float = 1e-3
@@ -106,6 +106,14 @@ def _write_raw_impedance_input(path: Path, spectrum: SpectrumData) -> None:
 
 def _matlab_runner_path() -> Path:
     return _resource_root() / "matlab_bridge" / "eismaster_batch_drt.m"
+
+
+def _default_drttools_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        visible_dir = Path(sys.executable).resolve().parent / "matlab-DRTtools-local"
+        if visible_dir.exists():
+            return visible_dir
+    return _resource_root() / "matlab-DRTtools-local"
 
 
 def _resource_root() -> Path:
