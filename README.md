@@ -1,171 +1,91 @@
-# EISMaster
+# EISMaster Pro 谱图分析工具
 
-EISMaster 是一个面向电化学阻抗谱（Electrochemical Impedance Spectroscopy, EIS）的桌面分析工具。它把 CHI660F/CH Instruments 数据读取、谱图检查、半圆分段、等效电路拟合、批量处理、DRT 分析和结果导出集中在一个 PySide6 图形界面里，适合电池、电极材料、腐蚀、界面动力学等实验数据的快速整理和发布前分析。
+EISMaster Pro 是一个面向电化学阻抗谱（Electrochemical Impedance Spectroscopy, EIS）的桌面分析软件。它的核心目标很直接：把辰华电化学工作站导出的阻抗数据直接读进来，在同一个界面里完成谱图查看、质量检查、等效电路拟合、批量拟合、趋势分析和 MATLAB DRT 分析。
 
-![EISMaster workflow](docs/images/workflow.svg)
+软件特别强化了辰华数据的兼容性：**支持辰华 `.bin` 二进制文件直接处理**，也支持辰华/CHI 软件导出的 **`.txt` 文本文件**。对经常处理 CHI604E、CHI660E、CHI660F 等仪器数据的用户来说，不需要先手动转表、改列名或复制到模板里，可以直接导入文件开始分析。
 
-## 主要能力
+## 你能用它做什么
 
-- **多格式导入**：支持 CHI660F `.bin`、CH Instruments `.txt` 和通用 `.csv` 阻抗数据。
-- **谱图检查**：自动生成 Nyquist、Bode 模值、Bode 相位图，并显示原始数据表。
-- **质量评估**：提供 KK 检查、噪声估计、异常点提示和拟合失败诊断。
-- **等效电路拟合**：内置单半圆 `R(Q(RWo))` 和双半圆 `R(QR)(Q(RWo))` 模型。
-- **手动/自动分段**：可用 Auto 识别，也可以拖动分界滑块指定半圆和低频尾部范围。
-- **批量拟合**：可对文件夹中的 operando EIS 数据自动分段、拟合并汇总参数趋势。
-- **DRT 集成**：可调用 MATLAB DRTtools，支持标准 Tikhonov、贝叶斯置信区间、BHT 和峰拟合分析流程。
-- **发布型导出**：导出拟合报告、原始图表数据、拟合叠加曲线、Rs/Rct 摘要和 XLSX 批量汇总表。
+| 能力 | 说明 |
+| --- | --- |
+| 辰华 `.bin` 直读 | 直接解析辰华阻抗二进制文件，自动提取频率、实部、虚部等阻抗数据 |
+| `.txt` 文件导入 | 支持 CHI 软件导出的文本阻抗文件，保留仪器、采集时间、点数等信息 |
+| 谱图可视化 | 自动绘制 Nyquist 图、Bode 幅频图、Bode 相位图 |
+| 数据质量检查 | 显示点数、质量状态、KK/Z-HIT 状态和可能异常点 |
+| 单谱图拟合 | 支持单弧和双弧等效电路模型，输出 Rs、Rct、Rsei、CPE、Warburg 参数 |
+| 分界点控制 | 拟合页提供半圆/尾部区域分界滑条，可手动调整拟合先验 |
+| 批量拟合 | 对一组谱图批量拟合，生成参数趋势和批量摘要 |
+| MATLAB DRT | 可配置 MATLAB 与 DRTtools，运行 Tikhonov、BHT、峰拟合等 DRT 分析 |
+| 结果导出 | 支持拟合报告、叠加曲线、原始绘图数据、Rs/Rct 摘要和批量表格导出 |
 
-![EISMaster interface map](docs/images/interface-map.svg)
+## 界面导读
 
-## 安装和运行
+EISMaster Pro 的主界面分成三个主要工作页：**谱图**、**拟合**、**批量拟合**。左侧是导航栏，中间是当前工作区。实际工作时通常按这个顺序走：
 
-### 1. 克隆项目
-
-```powershell
-git clone https://github.com/Jakiewbe/EISMaster.git
-cd EISMaster
+```text
+导入 bin/txt 文件 -> 查看 Nyquist/Bode -> 检查质量状态
+                 -> 调整分界点 -> 运行等效电路拟合
+                 -> 批量拟合/趋势分析 -> MATLAB DRT 或导出结果
 ```
 
-### 2. 准备 Python 环境
+### 1. 谱图页：导入文件并检查原始谱图
 
-项目要求 Python 3.11 或更新版本。Windows 推荐使用 Conda 或 venv：
+谱图页用于导入和查看原始 EIS 数据。左侧是文件队列，右侧是可视化区域。导入文件后，软件会显示：
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install --upgrade pip
-```
+- 文件名，例如 `1.txt`
+- 文件格式和点数，例如 `TXT - 85 pt`
+- 仪器信息，例如 `CHI604E`
+- 当前质量状态，例如 `warn`
+- Nyquist 图
+- Bode 幅频图
+- Bode 相位图
+- 数据检查状态和异常点提示
 
-### 3. 安装依赖
+这个页面适合做第一轮判断：文件有没有读对、点数是否正常、阻抗虚部方向是否合理、Bode 曲线是否连续、低频端是否有明显噪声或漂移。
 
-普通安装：
+**辰华文件支持是这个页面的重点。** 对 `.bin` 文件，EISMaster 会尝试直接解析二进制记录，不要求用户先在 CHI 软件里另存为文本；对 `.txt` 文件，软件会读取 CHI 导出的频率、阻抗实部、阻抗虚部、模值、相位等列，并保留采集时间和仪器信息。
 
-```powershell
-pip install -e .
-```
+### 2. 拟合页：单谱图等效电路拟合
 
-带 `pyimpspec` 初值估计的高级安装：
+拟合页左侧仍然是导入队列，中间显示拟合结果，右侧显示拟合曲线。软件会输出：
 
-```powershell
-pip install -e ".[advanced]"
-```
+- 当前模型，例如 `single-arc R(QRWo)`
+- 拟合状态，例如 `OK`
+- 主要参数：`Rs`、`Rct`
+- 双弧模型参数：`Rsei`、`Rct`
+- 参数不确定度
+- 诊断信息
+- 高级参数：`Wo_R`、`Wo_T`、`Wo_P`、`CPE_T`、`CPE_P`
+- 拟合统计：`aic`、`aicc`、`bic`、`chi2_reduced` 等
+- 置信区间和相关性提示
 
-### 4. 启动软件
+右侧的拟合图会同时显示实测数据、半圆区域、尾部区域和拟合曲线。顶部的分界滑条用于控制半圆和低频尾部的划分。
 
-```powershell
-python -m eismaster
-```
+常见操作方式：
 
-也可以使用项目里的启动脚本：
+1. 在左侧选择一个谱图。
+2. 选择单弧或双弧模型。
+3. 根据 Nyquist 图拖动分界点。
+4. 点击拟合。
+5. 查看 `Rs`、`Rct`、残差、参数不确定度和诊断提示。
 
-```powershell
-python launch_eismaster.py
-```
+分界点不是简单删点。它的作用是告诉拟合器：哪一段更像半圆，哪一段更像扩散尾部。对于半圆不完整、低频拖尾明显或者异常点较多的数据，手动分界通常比完全自动拟合更稳定。
 
-## 快速上手
+## 支持的数据格式
 
-### 第一步：导入数据
-
-打开软件后，在主窗口中选择单个文件或数据文件夹。EISMaster 会根据扩展名和文件内容自动判断读取方式：
-
-| 文件类型 | 扩展名 | 典型来源 | 说明 |
+| 格式 | 扩展名 | 推荐使用场景 | 说明 |
 | --- | --- | --- | --- |
-| CHI660F 二进制 | `.bin` | CHI A.C. Impedance 实验 | 自动识别尾部二进制记录，兼容记录数异常的文件 |
-| CH Instruments 文本 | `.txt` | CHI 软件导出 | 读取频率、实部、虚部、模值和相位 |
-| 通用表格 | `.csv` | 其他软件或自定义处理 | 需要包含频率、`Zreal`、`Zimag` 等等价列 |
+| 辰华二进制阻抗文件 | `.bin` | 从 CHI/辰华软件获得的原始阻抗文件 | 可直接导入，不需要先转 TXT |
+| 辰华文本导出文件 | `.txt` | CHI 软件导出的 A.C. Impedance 文本数据 | 自动读取频率、实部、虚部、模值、相位 |
+| 通用表格文件 | `.csv` | 其他软件或自定义整理后的阻抗数据 | 需要包含频率、Z real、Z imag 等等价列 |
 
-导入后，左侧队列会列出所有谱图。点击某个样品名即可切换当前分析对象。
+`.bin` 直读适合保留原始数据链路；`.txt` 适合与 CHI 软件导出结果核对。若同一样品同时有 `.bin` 和 `.txt`，可以分别导入做交叉验证。
 
-### 第二步：检查谱图和数据质量
+## 拟合模型
 
-在检查页中查看 Nyquist 图、Bode 模值图、Bode 相位图和原始数据表。建议先确认三件事：
+### 单弧模型：`R(Q(RWo))`
 
-1. 频率是否从高到低或低到高排列清楚。
-2. Nyquist 图是否存在明显反号、突跳或极端异常点。
-3. 高频截距和低频尾部是否符合实验预期。
-
-如果数据质量提示中出现异常点或 KK 检查警告，应先回到原始实验文件确认是否有测试中断、夹具接触不稳或导出格式错误。
-
-### 第三步：选择拟合模式
-
-拟合页提供三种模式：
-
-| 模式 | 适用情况 | 操作方式 |
-| --- | --- | --- |
-| `Single-arc R(QRWo)` | 一个主要半圆加低频扩散尾 | 拖动一个分界点，指定半圆结束位置 |
-| `Double-arc R(QR)(Q(RWo))` | 高频膜阻抗和中低频电荷转移两个半圆 | 拖动两个分界点，划分半圆 1、半圆 2 和尾部 |
-| `Auto 识别` | 批量初筛或半圆边界较清楚的数据 | 软件自动识别半圆数量和分界点 |
-
-![Manual split slider](docs/images/split-slider.svg)
-
-分界点不是简单裁剪数据，而是给拟合器提供“半圆区域”的先验信息。低频尾部仍会保留在模型拟合中，用于 Warburg 元件相关参数。
-
-### 第四步：运行拟合并阅读结果
-
-点击开始拟合后，计算会在后台线程中执行，界面不会卡死。完成后重点查看：
-
-- `Rs`：高频截距或溶液/欧姆阻抗。
-- `Rct`：电荷转移相关阻抗，通常用于比较反应动力学。
-- `Rsei`：双半圆模型中的膜阻抗或表面层阻抗。
-- `CPE_T` / `CPE_P`、`Q1` / `n1`、`Q2` / `n2`：非理想电容元件参数。
-- `Wo_R`、`Wo_T`、`Wo_P`：有限长度 Warburg 元件参数。
-- `R2`、残差和诊断信息：用于判断拟合是否可信。
-
-如果拟合曲线偏离明显，优先调整分界点，然后再考虑换模型。单半圆数据强行使用双半圆模型，或者双半圆数据只用单半圆模型，都会导致参数互相补偿。
-
-## 批量分析流程
-
-批量页适用于 operando EIS、循环中定期采样、不同电位/温度/时间点的系列数据。
-
-1. 选择包含 EIS 文件的文件夹。
-2. 确认队列中每个文件都能正确解析。
-3. 选择拟合模式，常规批量建议先用 `Auto 识别`。
-4. 点击批量拟合。
-5. 检查汇总表中的 `Rs`、`Rct`、`Rsei`、拟合误差和诊断列。
-6. 导出 XLSX 或 TXT，用于后续绘图和统计。
-
-批量结果不是“盲信”的最终结论。建议抽查头、中、尾几个谱图的拟合叠加图，确认自动分段没有把噪声或扩散尾误识别为半圆。
-
-## DRT 分析
-
-EISMaster 可以把谱图整理成 MATLAB DRTtools 可读取的输入，并调用本地 MATLAB 运行 DRT 分析。
-
-### 需要准备
-
-- 已安装 MATLAB。
-- 已下载 DRTtools，并能在 MATLAB 中正常运行。
-- 在软件中填写 MATLAB 可执行文件路径和 DRTtools 目录。
-
-### 方法选择
-
-| 选项 | 说明 |
-| --- | --- |
-| 标准法（Tikhonov） | 常规 DRT 反演，适合快速比较峰位和峰强 |
-| 贝叶斯置信区间 | 输出不确定性信息，适合需要可信区间的结果 |
-| BHT（贝叶斯分层） | 更完整的贝叶斯层级模型流程 |
-| 峰拟合分析 | 在标准 DRT 曲线基础上提取峰参数 |
-
-DRT 对噪声和频率覆盖范围很敏感。若低频点不足或相位噪声很高，DRT 峰可能会出现假峰，建议结合原始 Nyquist/Bode 图一起判断。
-
-## 导出文件说明
-
-单个谱图导出通常会生成：
-
-| 文件 | 内容 |
-| --- | --- |
-| `*_fit_report.txt` 或 `.csv` | 拟合模型、参数、误差、诊断信息 |
-| `*_raw_plot.txt` 或 `.csv` | 原始频率、实部、虚部、模值、相位 |
-| `*_fit_overlay.txt` 或 `.csv` | 原始曲线与拟合曲线叠加数据 |
-| `*_rs_rct.txt` 或 `.csv` | 常用阻抗参数摘要 |
-| `.xlsx` | 批量汇总表或多 sheet 导出 |
-
-这些文本文件可以直接导入 Origin、Excel、Python、MATLAB 或其他绘图软件。
-
-## 等效电路模型
-
-### 单半圆：`R(Q(RWo))`
-
-适合一个主导电荷转移半圆和低频扩散尾的数据。
+适用于只有一个主要半圆，同时低频端带扩散尾部的谱图。
 
 ```text
       +--- CPE ------+
@@ -173,113 +93,165 @@ Rs ---+              +---
       +--- Rct - Wo -+
 ```
 
-主要参数：`Rs`、`CPE_T`、`CPE_P`、`Rct`、`Wo_R`、`Wo_T`、`Wo_P`。
+主要输出：
 
-### 双半圆：`R(QR)(Q(RWo))`
+- `Rs`：欧姆阻抗/溶液阻抗/高频截距
+- `Rct`：电荷转移阻抗
+- `CPE_T`、`CPE_P`：非理想电容参数
+- `Wo_R`、`Wo_T`、`Wo_P`：有限长度 Warburg 参数
 
-适合具有高频表面膜过程和中低频电荷转移过程的数据。
+### 双弧模型：`R(QR)(Q(RWo))`
+
+适用于高频和中低频存在两个过程的谱图，例如表面膜过程加电荷转移过程。
 
 ```text
       +--- Rsei ----+   +--- Rct ---- Wo ----+
 Rs ---+             +---+                    +---
       +--- Q1 ------+   +--- Q2 -------------+
-     high-frequency      mid/low-frequency
-     surface film        charge transfer
 ```
 
-主要参数：`Rs`、`Q1`、`n1`、`Rsei`、`Q2`、`n2`、`Rct`、`Wo_R`、`Wo_T`、`Wo_P`。
+主要输出：
 
-## 发布包生成
+- `Rs`：欧姆阻抗
+- `Rsei`：膜阻抗或高频界面阻抗
+- `Rct`：电荷转移阻抗
+- `Q1/n1`、`Q2/n2`：两个 CPE 支路参数
+- `Wo_R`、`Wo_T`、`Wo_P`：扩散相关参数
 
-Windows 发布包使用 PyInstaller 生成。推荐在 Python 3.11 环境中执行：
+## 批量拟合和趋势分析
+
+批量拟合页用于处理一组 EIS 文件，例如 operando 测试、循环过程测试、不同温度或不同 SOC 条件下的连续谱图。
+
+界面上方提供：
+
+- `批量拟合`
+- `导出批量数据`
+- `运行 MATLAB DRT`
+
+趋势分析区域可以勾选：
+
+- `Rs`
+- `Rsei`
+- `Rct`
+
+软件会把每个谱图的拟合参数按样品序号绘制成趋势图，便于快速观察阻抗随时间、循环或工况的变化。批量结果区域会汇总每个谱图的拟合结果和诊断信息。
+
+建议流程：
+
+1. 导入一个文件夹或多个谱图文件。
+2. 先在谱图页抽查头、中、尾几个文件。
+3. 在拟合页确认模型和分界策略。
+4. 回到批量拟合页运行批量拟合。
+5. 检查 `Rs/Rsei/Rct` 趋势是否连续。
+6. 导出批量表格用于 Origin、Excel、Python 或论文绘图。
+
+## MATLAB DRT 分析
+
+批量拟合页面下方包含 MATLAB DRT 配置区。需要填写：
+
+- MATLAB 可执行文件路径，例如 `D:\Matlabs\bin\matlab.EXE`
+- DRTtools 目录
+- 计算方式
+- DRT 类型
+- Lambda
+- Coeff
+- 电感处理方式
+
+支持的计算方式包括：
+
+| 计算方式 | 用途 |
+| --- | --- |
+| 标准法（Tikhonov） | 常规 DRT 反演，适合快速查看弛豫峰 |
+| 贝叶斯置信区间 | 输出不确定性信息，适合更严格的结果判断 |
+| BHT | 贝叶斯分层 DRT 分析 |
+| 峰拟合分析 | 对 DRT 峰进行进一步提取和拟合 |
+
+DRT 对噪声和频率范围很敏感。建议先确认 Nyquist/Bode 曲线质量，再运行 DRT；如果低频点漂移明显，DRT 结果需要谨慎解释。
+
+## 安装和运行
+
+### 从源码运行
 
 ```powershell
-python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --clean EISMaster.spec
+git clone https://github.com/Jakiewbe/EISMaster.git
+cd EISMaster
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -e .
+python -m eismaster
 ```
 
-构建完成后，主程序位于：
+如果需要高级初值估计：
+
+```powershell
+pip install -e ".[advanced]"
+```
+
+### 使用 Release 包
+
+下载 Windows Release zip 后解压，运行：
 
 ```text
-dist/EISMaster/EISMaster.exe
+EISMaster.exe
 ```
 
-发布前建议把整个 `dist/EISMaster` 文件夹压缩为 zip，并记录 SHA256：
+使用 Release 包时不需要自己安装 Python 依赖。MATLAB DRT 功能仍然需要本机已经安装 MATLAB，并正确配置 DRTtools 目录。
 
-```powershell
-Compress-Archive -Path dist\EISMaster -DestinationPath dist\EISMaster-v0.1.0-windows-x64.zip -Force
-Get-FileHash dist\EISMaster-v0.1.0-windows-x64.zip -Algorithm SHA256
-```
+## 导出结果
 
-发布到 GitHub Release 时，上传 zip 文件即可。`dist/` 是构建产物目录，默认不会提交到 Git 仓库。
+常见导出文件包括：
 
-## 项目结构
+| 文件 | 内容 |
+| --- | --- |
+| `*_fit_report.txt` / `.csv` | 拟合模型、参数、统计量、诊断信息 |
+| `*_fit_overlay.txt` / `.csv` | 实测曲线和拟合曲线叠加数据 |
+| `*_raw_plot.txt` / `.csv` | 原始 Nyquist/Bode 绘图数据 |
+| `*_rs_rct.txt` / `.csv` | 常用参数摘要 |
+| `.xlsx` | 批量拟合汇总表 |
+
+这些文件可以直接用于 Origin、Excel、MATLAB 或 Python 后处理。
+
+## 适合的使用场景
+
+- 辰华 CHI 工作站 EIS 数据快速查看
+- `.bin` 原始阻抗文件直接解析
+- `.txt` 导出文件批量整理
+- 电池材料、界面阻抗、腐蚀、电极过程分析
+- 单谱图等效电路拟合
+- operando EIS 批量拟合和趋势追踪
+- DRTtools 流程整理和 MATLAB DRT 批量运行
+- 论文或组会前的阻抗参数导出
+
+## 开发者信息
+
+项目结构：
 
 ```text
 src/eismaster/
-  app.py                  # GUI 入口
-  models.py               # SpectrumData、FitOutcome 等数据结构
+  app.py                  # 程序入口
+  models.py               # 谱图和拟合结果数据结构
   exporters.py            # TXT / CSV / XLSX 导出
   matlab_drt.py           # MATLAB DRTtools 集成
-  io/
-    chi.py                # CHI .bin / .txt / .csv 解析
+  io/chi.py               # 辰华 bin/txt/csv 解析
   analysis/
-    fitting.py            # 等效电路拟合主逻辑
+    fitting.py            # 等效电路拟合
     segmentation.py       # 自动/手动半圆分段
     batch.py              # 批量拟合
-    circuits.py           # 电路模板定义
-    diagnostics.py        # 拟合诊断
-    native_drt.py         # 原生 DRT 计算
-    preprocessing.py      # 数据清洗和预处理
-    quality.py            # 质量评估
+    quality.py            # 数据质量检查
+    native_drt.py         # 原生 DRT 相关工具
   ui/
     main_window.py        # 主窗口
-    split_slider.py       # 单/双分界点滑块
-    segment_overlay.py    # Nyquist 分段覆盖层
-    range_slider.py       # 通用范围滑块
-    theme.py              # 深色主题
-    circuit_builder/      # 等效电路编辑组件
+    split_slider.py       # 分界点滑条
+    segment_overlay.py    # 拟合图分段覆盖层
 tests/                    # 单元测试和回归测试
-docs/images/              # README 示意图
 ```
 
-## 开发和测试
-
-运行全部测试：
+运行测试：
 
 ```powershell
 python -m pytest
 ```
-
-运行解析器相关测试：
-
-```powershell
-python -m pytest tests/test_parsers.py
-```
-
-运行 UI smoke 测试：
-
-```powershell
-python -m pytest tests/test_ui_smoke.py
-```
-
-## 常见问题
-
-### `.bin` 和 `.txt` 同一个样品点数不一致怎么办？
-
-优先确认 `.bin` 是否来自 CHI A.C. Impedance 测试。EISMaster 会尝试从文件尾部识别真实二进制记录段，以处理文件头记录数不可靠的情况。如果仍不一致，请用 `.txt` 结果作为人工校验基准。
-
-### 拟合参数看起来不合理怎么办？
-
-先检查谱图和分界点，再检查模型选择。半圆边界错误会直接影响 `Rct`、`Rsei` 和 CPE 参数。必要时用单半圆和双半圆分别试算，对比残差和参数稳定性。
-
-### 为什么 DRT 结果有多个小峰？
-
-DRT 反演对噪声、频率范围和正则化参数敏感。小峰可能是真实过程，也可能是噪声放大。建议结合 Bode 相位、Nyquist 残差和重复实验判断。
-
-### 发布包打开失败怎么办？
-
-先在命令行中运行 `dist\EISMaster\EISMaster.exe` 观察错误信息。常见原因包括缺少 Qt 插件、MATLAB/DRTtools 路径不可用、或者构建环境依赖不完整。
 
 ## License
 
