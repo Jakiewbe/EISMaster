@@ -21,9 +21,11 @@ except Exception:  # pragma: no cover
 
 try:
     from scipy.optimize import OptimizeResult, least_squares
-except Exception:  # pragma: no cover
+    _SCIPY_IMPORT_ERROR = None
+except Exception as exc:  # pragma: no cover
     OptimizeResult = None  # type: ignore[misc,assignment]
     least_squares = None
+    _SCIPY_IMPORT_ERROR = exc
 
 logger = logging.getLogger(__name__)
 
@@ -476,11 +478,12 @@ def _fit_zview_global(
 ) -> FitOutcome:
     template = TEMPLATES["zview_segmented_rq_rwo"]
     if least_squares is None:
+        detail = f": {_SCIPY_IMPORT_ERROR}" if _SCIPY_IMPORT_ERROR is not None else ""
         return FitOutcome(
             model_key=template.key,
             model_label=template.label,
             status="unavailable",
-            message="scipy is not installed; ZView-style global fitting unavailable.",
+            message=f"scipy.optimize is unavailable{detail}; ZView-style global fitting unavailable.",
             masked_points=int((~point_mask).sum()),
         )
 
@@ -659,11 +662,12 @@ def _fit_zview_double_global(
 ) -> FitOutcome:
     template = TEMPLATES["zview_double_rq_qrwo"]
     if least_squares is None:
+        detail = f": {_SCIPY_IMPORT_ERROR}" if _SCIPY_IMPORT_ERROR is not None else ""
         return FitOutcome(
             model_key=template.key,
             model_label=template.label,
             status="unavailable",
-            message="scipy is not installed; ZView-style global fitting unavailable.",
+            message=f"scipy.optimize is unavailable{detail}; ZView-style global fitting unavailable.",
             masked_points=int((~point_mask).sum()),
         )
 

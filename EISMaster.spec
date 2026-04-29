@@ -93,10 +93,6 @@ a = Analysis(
         "pip",
         "wheel",
         "pkg_resources",  # 排除 pkg_resources 以避免 jaraco 缺失错误
-        # scipy 不需要的子模块
-        "scipy.io",
-        "scipy.constants",
-        "scipy.ndimage",
         # pandas 不需要的子模块
         "pandas.tests",
         # numpy 不需要的子模块
