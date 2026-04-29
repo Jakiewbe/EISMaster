@@ -30,6 +30,8 @@ EISMaster Pro 的主界面分成三个主要工作页：**谱图**、**拟合**�
 
 ### 1. 谱图页：导入文件并检查原始谱图
 
+![谱图页：Nyquist 与 Bode 可视化](docs/images/1.png)
+
 谱图页用于导入和查看原始 EIS 数据。左侧是文件队列，右侧是可视化区域。导入文件后，软件会显示：
 
 - 文件名，例如 `1.txt`
@@ -46,6 +48,8 @@ EISMaster Pro 的主界面分成三个主要工作页：**谱图**、**拟合**�
 **辰华文件支持是这个页面的重点。** 对 `.bin` 文件，EISMaster 会尝试直接解析二进制记录，不要求用户先在 CHI 软件里另存为文本；对 `.txt` 文件，软件会读取 CHI 导出的频率、阻抗实部、阻抗虚部、模值、相位等列，并保留采集时间和仪器信息。
 
 ### 2. 拟合页：单谱图等效电路拟合
+
+![拟合页：分界点、参数和拟合曲线](docs/images/2.png)
 
 拟合页左侧仍然是导入队列，中间显示拟合结果，右侧显示拟合曲线。软件会输出：
 
@@ -120,6 +124,8 @@ Rs ---+             +---+                    +---
 
 ## 批量拟合和趋势分析
 
+![批量拟合页：参数趋势和批量控制](docs/images/3.png)
+
 批量拟合页用于处理一组 EIS 文件，例如 operando 测试、循环过程测试、不同温度或不同 SOC 条件下的连续谱图。
 
 界面上方提供：
@@ -147,6 +153,8 @@ Rs ---+             +---+                    +---
 
 ## MATLAB DRT 分析
 
+![MATLAB DRT 配置](docs/images/4.png)
+
 批量拟合页面下方包含 MATLAB DRT 配置区。需要填写：
 
 - MATLAB 可执行文件路径，例如 `D:\Matlabs\bin\matlab.EXE`
@@ -167,6 +175,16 @@ Rs ---+             +---+                    +---
 | 峰拟合分析 | 对 DRT 峰进行进一步提取和拟合 |
 
 DRT 对噪声和频率范围很敏感。建议先确认 Nyquist/Bode 曲线质量，再运行 DRT；如果低频点漂移明显，DRT 结果需要谨慎解释。
+
+### DRTtools 来源声明
+
+Release 包中随附的 `matlab-DRTtools-local` 脚本来自 ciuccislab 的开源项目 DRTtools：
+
+```text
+https://github.com/ciuccislab/DRTtools
+```
+
+DRTtools 使用 MIT License。EISMaster Pro 仅对它进行本地调用和流程集成，版权归原项目作者所有；Release 包内保留其原始 `LICENSE` 和 `README.md`。
 
 ## 安装和运行
 
@@ -197,6 +215,16 @@ EISMaster.exe
 ```
 
 使用 Release 包时不需要自己安装 Python 依赖。MATLAB DRT 功能仍然需要本机已经安装 MATLAB，并正确配置 DRTtools 目录。
+
+Release 解压后会包含：
+
+```text
+EISMaster.exe
+matlab-DRTtools-local/
+THIRD_PARTY_NOTICES.md
+```
+
+其中 `matlab-DRTtools-local/` 为随包附带的 DRTtools 脚本目录，来源见上面的 DRTtools 来源声明。
 
 ## 导出结果
 
