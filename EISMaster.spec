@@ -1,7 +1,7 @@
 from pathlib import Path
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
 ROOT = Path.cwd()
@@ -14,25 +14,13 @@ for folder_name in ("matlab_bridge", "matlab-DRTtools-local"):
     if folder.exists():
         datas.append((str(folder), folder_name))
 
-hiddenimports = [
-    # qfluentwidgets - 只导入实际使用的模块
-    "qfluentwidgets",
-    "qfluentwidgets.common",
-    "qfluentwidgets.common.config",
-    "qfluentwidgets.common.icon",
-    "qfluentwidgets.common.style_sheet",
-    "qfluentwidgets.common.translator",
-    "qfluentwidgets.components",
-    "qfluentwidgets.components.widgets",
-    "qfluentwidgets.components.dialog_box",
-    "qfluentwidgets.window",
-    "qfluentwidgets.window.fluent_window",
-    # pyqtgraph - 只导入核心模块
+hiddenimports = collect_submodules("qfluentwidgets") + collect_submodules(
     "pyqtgraph",
-    "pyqtgraph.PlotItem",
-    "pyqtgraph.graphicsItems",
-    "pyqtgraph.exporters",
-]
+    filter=lambda name: not (
+        name.startswith("pyqtgraph.examples")
+        or name.startswith("pyqtgraph.opengl")
+    ),
+)
 
 binaries = []
 
@@ -46,13 +34,9 @@ qt_excludes = {
     "Qt6Quick.dll",         # QML (6MB)
     "Qt6Qml.dll",           # QML (5MB)
     "Qt6Pdf.dll",           # PDF (4MB)
-    "Qt6OpenGL.dll",        # OpenGL (2MB)
-    "Qt6Multimedia.dll",    # 多媒体 (1MB)
-    "QtOpenGL.pyd",         # OpenGL 绑定 (8MB)
     "Qt6QmlModels.dll",     # QML 模型
     "Qt6QmlWorkerScript.dll",
     "Qt6VirtualKeyboard.dll",
-    "Qt6Svg.dll",            # SVG
 }
 
 # PySide6 DLL 排除（PyInstaller hooks 自动收集的）
@@ -61,9 +45,7 @@ pyside6_dll_excludes = {
     "Qt6Quick.dll",
     "Qt6Qml.dll",
     "Qt6Pdf.dll",
-    "Qt6OpenGL.dll",
     "Qt6QmlModels.dll",
-    "Qt6Svg.dll",
 }
 
 for dll_name in (
@@ -124,20 +106,10 @@ a = Analysis(
         "numpy.tests",
         # pyqtgraph 不需要的子模块
         "pyqtgraph.opengl",
-        "pyqtgraph.canvas",
-        "pyqtgraph.console",
-        "pyqtgraph.dockarea",
-        # qfluentwidgets 不需要的子模块
-        "qfluentwidgets.components.date_time",
-        "qfluentwidgets._rc",
         # PySide6 不需要的子模块
         "PySide6.QtQuick",
         "PySide6.QtQml",
         "PySide6.QtPdf",
-        "PySide6.QtMultimedia",
-        "PySide6.QtOpenGL",
-        "PySide6.QtSvg",
-        "PySide6.QtSvgWidgets",
         "PySide6.Qt3DCore",
         "PySide6.Qt3DRender",
         "PySide6.Qt3DInput",
@@ -150,7 +122,6 @@ a = Analysis(
         "PySide6.QtHelp",
         "PySide6.QtHttpServer",
         "PySide6.QtLocation",
-        "PySide6.QtMultimediaWidgets",
         "PySide6.QtNfc",
         "PySide6.QtPositioning",
         "PySide6.QtRemoteObjects",
@@ -167,7 +138,6 @@ a = Analysis(
         "PySide6.QtWebEngineCore",
         "PySide6.QtWebEngineWidgets",
         "PySide6.QtWebSockets",
-        "PySide6.QtXml",
     ],
     noarchive=False,
     optimize=0,
