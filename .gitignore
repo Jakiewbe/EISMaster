@@ -15,3 +15,22 @@ venv/
 *.tmp
 *.bak
 tests/_tmp*/
+
+# Local agent/editor settings
+.claude/
+.codex/
+
+# Local experiment inputs/outputs
+1.txt
+4.24FGS.bin
+batch_export.xlsx
+CFx_*_fit_overlay.txt
+CFx_*_fit_report.txt
+CFx_*_raw_plot.txt
+CFx_*_rs_rct.txt
+Ag_EIS_OCV/
+
+# Local MATLAB DRTtools checkout and generated DRT batches
+matlab-DRTtools-local/
+1/
+2/
