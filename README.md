@@ -360,22 +360,32 @@ src/eismaster/
   io/chi.py               # 辰华 bin/txt/csv 解析
   analysis/
     fitting.py            # 等效电路拟合
+    fitting_math.py       # 拟合数学辅助函数
     segmentation.py       # 自动/手动半圆分段
     batch.py              # 批量拟合
     quality.py            # 数据质量检查
     native_drt.py         # 原生 DRT 相关工具
   ui/
     main_window.py        # 主窗口
+    state.py               # 应用状态
+    workers.py             # 后台任务
+    presenters.py          # 状态文案和展示格式化
     split_slider.py       # 分界点滑条
     segment_overlay.py    # 拟合图分段覆盖层
 tests/                    # 单元测试和回归测试
 ```
 
+项目还保留了 `rewrite/` 目录，用于 Rust/Tauri 实现的功能对照和后续评估。目前 Python/PySide6 仍是正式主线，Rust/Tauri 暂不作为等价替代。
+
 运行测试：
 
 ```powershell
-python -m pytest
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,advanced]"
+.\.venv\Scripts\python.exe -m pytest
 ```
+
+当前回归测试共 80 个，覆盖数据解析、质量检查、分段、拟合、批处理、DRT、导出、UI 状态和打包资源校验。
 
 ## License
 
