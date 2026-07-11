@@ -1,82 +1,69 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
-from pathlib import Path
+
 import logging
-import numpy as np
 import time
-from eismaster.analysis.batch import analyze_batch_auto
-from eismaster.analysis.circuits import TEMPLATES
-from eismaster.analysis.fitting import fit_spectrum
-from eismaster.analysis.quality import assess_spectrum_quality
-from eismaster.analysis.segmentation import ArcRange, SegmentDetection, detect_segments
-from eismaster.exporters import export_batch_summary, export_fit_results, export_spectrum_bundle
-from eismaster.io import load_spectra_from_folder, load_spectrum
-from eismaster.matlab_drt import MatlabDrtConfig, MatlabDrtResult, run_matlab_drt, stage_matlab_drt_inputs
-from eismaster.models import BatchSummary, FitOutcome, QualityReport, SpectrumData
-from eismaster.ui.segment_overlay import SegmentBoundaries, SegmentOverlay
-from eismaster.ui.split_slider import SplitSlider
-from PySide6.QtCore import QObject, QSignalBlocker, QThread, Signal, Qt
+from contextlib import suppress
+from pathlib import Path
+
+import numpy as np
+from PySide6.QtCore import QSignalBlocker, Qt, QThread
 from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
-    QComboBox,
     QFileDialog,
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QMainWindow,
     QMessageBox,
-    QProgressBar,
-    QPushButton,
-    QScrollArea,
     QSizePolicy,
     QSplitter,
-    QSpinBox,
-    QStackedWidget,
-    QTabWidget,
-    QTableWidget,
     QTableWidgetItem,
     QTextEdit,
     QToolTip,
     QVBoxLayout,
     QWidget,
 )
+
+from eismaster.analysis.quality import assess_spectrum_quality
+from eismaster.analysis.segmentation import ArcRange, SegmentDetection, detect_segments
+from eismaster.exporters import export_batch_summary, export_spectrum_bundle
+from eismaster.io import load_spectra_from_folder, load_spectrum
+from eismaster.matlab_drt import MatlabDrtConfig, MatlabDrtResult
+from eismaster.models import BatchSummary, FitOutcome, QualityReport, SpectrumData
+from eismaster.ui.presenters import fit_error_summary, fit_status_text, format_stat
+from eismaster.ui.segment_overlay import SegmentBoundaries, SegmentOverlay
+from eismaster.ui.split_slider import SplitSlider
+from eismaster.ui.state import AppState
+from eismaster.ui.workers import BatchFitWorker, MatlabDrtWorker, SingleFitWorker
+
 try:
     import pyqtgraph as pg
 except Exception:  # pragma: no cover
     pg = None
 from qfluentwidgets import (
-    MSFluentWindow,
-    NavigationItemPosition,
-    setTheme,
-    Theme,
-    FluentIcon as FIF,
-    PushButton,
-    PrimaryPushButton,
-    TransparentPushButton,
-    ComboBox,
-    LineEdit,
-    TableWidget,
-    ProgressBar,
-    TableItemDelegate,
-    ScrollArea,
-    SimpleCardWidget,
-    TitleLabel,
     BodyLabel,
     CaptionLabel,
+    ComboBox,
+    LineEdit,
+    MSFluentWindow,
+    PrimaryPushButton,
+    ProgressBar,
+    PushButton,
+    ScrollArea,
+    SimpleCardWidget,
     StrongBodyLabel,
-    IndeterminateProgressBar,
-    InfoBar,
-    InfoBarIcon,
-    InfoBarPosition,
+    TableWidget,
+    Theme,
+    TitleLabel,
+    setTheme,
 )
+from qfluentwidgets import (
+    FluentIcon as FIF,
+)
+
 INSPECT_TAB = 0
 FIT_TAB = 1
 BATCH_TAB = 2
@@ -109,61 +96,6 @@ if pg is not None:
 logger = logging.getLogger(__name__)
 
 
-class MatlabDrtWorker(QObject):
-    finished = Signal(object, object)
-    def __init__(self, config: MatlabDrtConfig, spectra: list[SpectrumData], export_dir: Path) -> None:
-        super().__init__()
-        self.config = config
-        self.spectra = spectra
-        self.export_dir = export_dir
-    def run(self) -> None:
-        try:
-            staging_dir = stage_matlab_drt_inputs(self.spectra, self.export_dir)
-            result = run_matlab_drt(self.config, staging_dir, self.export_dir / "results")
-            self.finished.emit(result, None)
-        except Exception as exc:  # pragma: no cover
-            self.finished.emit(None, exc)
-class BatchFitWorker(QObject):
-    progress = Signal(int, int, str)
-    finished = Signal(object, object)
-    def __init__(self, spectra: list[SpectrumData]) -> None:
-        super().__init__()
-        self.spectra = spectra
-    def run(self) -> None:
-        try:
-            summary = analyze_batch_auto(self.spectra, progress_callback=self._emit_progress)
-            self.finished.emit(summary, None)
-        except Exception as exc:  # pragma: no cover
-            self.finished.emit(None, exc)
-    def _emit_progress(self, index: int, total: int, item) -> None:
-        self.progress.emit(index, total, item.spectrum.display_name)
-class SingleFitWorker(QObject):
-    finished = Signal(object, object, str)
-    def __init__(self, spectrum: SpectrumData, template_key: str,
-                 arc_ranges: list[ArcRange] | None) -> None:
-        super().__init__()
-        self.spectrum = spectrum
-        self.template_key = template_key
-        self.arc_ranges = arc_ranges
-        self.display_name = spectrum.display_name
-    def run(self) -> None:
-        try:
-            fit = fit_spectrum(self.spectrum, self.template_key, arc_ranges=self.arc_ranges)
-            self.finished.emit(fit, None, self.display_name)
-        except Exception as exc:  # pragma: no cover
-            self.finished.emit(None, exc, self.display_name)
-@dataclass
-class AppState:
-    spectra: list[SpectrumData] = field(default_factory=list)
-    qualities: dict[str, QualityReport] = field(default_factory=dict)
-    fits: dict[tuple[str, str], FitOutcome] = field(default_factory=dict)
-    segment_hints: dict[str, SegmentDetection] = field(default_factory=dict)
-    point_masks: dict[str, np.ndarray] = field(default_factory=dict)
-    batch_summary: BatchSummary | None = None
-    current_index: int = -1
-    drt_busy: bool = False
-    batch_busy: bool = False
-    fit_busy: bool = False
 class MainWindow(MSFluentWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -424,7 +356,6 @@ class MainWindow(MSFluentWindow):
         batch_top_layout.addWidget(self.batch_progress_label)
         batch_top_layout.addWidget(self.batch_progress)
         layout.addWidget(batch_top_panel)
-        summary_panel = self._panel("批量摘要", "批量拟合的整体结果摘要")
         self.batch_text = self._info_box()
         self.batch_text.setMinimumHeight(112)
         self.batch_text.setMaximumHeight(128)
@@ -487,6 +418,12 @@ class MainWindow(MSFluentWindow):
         self.matlab_inductance_combo = ComboBox()
         for label, value in [("保留电感", 1), ("忽略电感", 2), ("去除电感", 3)]:
             self.matlab_inductance_combo.addItem(label, userData=value)
+        self.drt_line_x_combo = ComboBox()
+        for label, value in [("logtau / gamma", "logtau"), ("tau/s / gamma", "tau")]:
+            self.drt_line_x_combo.addItem(label, userData=value)
+        self.drt_logtau_breaks_edit = LineEdit()
+        self.drt_logtau_breaks_edit.setText("-3, 0")
+        self.drt_logtau_breaks_edit.setToolTip("输入 logτ 分界点，用逗号分隔。例如 1, 3 会导出 <1、1 到 3、>=3 三个积分区间")
         matlab_exe_browse = PushButton(FIF.FOLDER, "浏览")
         matlab_exe_browse.clicked.connect(self._browse_matlab_exe)
         drttools_browse = PushButton(FIF.FOLDER, "浏览")
@@ -508,6 +445,10 @@ class MainWindow(MSFluentWindow):
         grid.addWidget(self.matlab_coeff_edit, 6, 1)
         grid.addWidget(BodyLabel("电感处理方式"), 7, 0)
         grid.addWidget(self.matlab_inductance_combo, 7, 1)
+        grid.addWidget(BodyLabel("线图导出 X"), 8, 0)
+        grid.addWidget(self.drt_line_x_combo, 8, 1)
+        grid.addWidget(BodyLabel("积分分区 logτ"), 9, 0)
+        grid.addWidget(self.drt_logtau_breaks_edit, 9, 1)
         matlab_panel.layout().addLayout(grid)
         self.matlab_status = self._info_box()
         self.matlab_status.setMaximumHeight(100)
@@ -574,10 +515,10 @@ class MainWindow(MSFluentWindow):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(4)
-        l = CaptionLabel(label)
+        label_widget = CaptionLabel(label)
         v = StrongBodyLabel(value)
         v.setWordWrap(True)
-        layout.addWidget(l)
+        layout.addWidget(label_widget)
         layout.addWidget(v)
         return {"container": container, "value": v}
     def _plot(self, title: str, x_label: str, y_label: str, *, log_x: bool = False, log_y: bool = False):
@@ -702,7 +643,7 @@ class MainWindow(MSFluentWindow):
     def _spectrum_path_key(self, spectrum: SpectrumData) -> str:
         return str(spectrum.metadata.file_path.resolve()).lower()
     def _invalidate_batch_outputs(self) -> None:
-        self.state.batch_summary = None
+        self.state.invalidate_batch_outputs()
         self._last_matlab_result = None
         self._last_drt_spectra = []
         if hasattr(self, "batch_progress"):
@@ -729,7 +670,11 @@ class MainWindow(MSFluentWindow):
     def _clear_all_spectra(self) -> None:
         if not self.state.spectra:
             return
-        self._replace_state([])
+        self.state.clear_all()
+        self._rebuild_file_list(-1)
+        self._refresh_import_text()
+        self._refresh_batch_view()
+        self._clear_views()
     def _move_current_spectrum_up(self) -> None:
         row = self.state.current_index
         if row <= 0 or row >= len(self.state.spectra):
@@ -762,8 +707,8 @@ class MainWindow(MSFluentWindow):
         self.batch_table.setRowCount(0)
         if pg is not None:
             plots = [
-                getattr(self, "nyquist_plot", None), 
-                getattr(self, "bode_mag_plot", None), 
+                getattr(self, "nyquist_plot", None),
+                getattr(self, "bode_mag_plot", None),
                 getattr(self, "bode_phase_plot", None),
                 getattr(self, "fit_nyquist_plot", None),
                 getattr(self, "fit_residual_plot", None),
@@ -807,34 +752,14 @@ class MainWindow(MSFluentWindow):
             self.selection_chip.setText("样品: 未选择")
         self.fit_metric["value"].setText(self._status_text_for_current(current))
     def _status_text_for_current(self, current: SpectrumData | None) -> str:
-        if self.state.drt_busy:
-            return "DRT 运行中"
-        if self.state.batch_busy:
-            return "批量拟合进行中"
-        if self.state.fit_busy:
-            return "正在拟合..."
-        if current is not None:
-            fit = self._latest_fit_for_spectrum(current.display_name)
-            if fit is not None:
-                labels = {
-                    "ok": "拟合正常",
-                    "warn": "拟合警告",
-                    "failed": "拟合失败",
-                    "unavailable": "拟合不可用",
-                }
-                return labels.get(fit.status, fit.status)
-        summary = self.state.batch_summary
-        if summary is not None and summary.items:
-            total = len(summary.items)
-            done = sum(1 for item in summary.items if item.fit is not None)
-            failed = sum(1 for item in summary.items if item.fit is not None and item.fit.status == "failed")
-            warned = sum(1 for item in summary.items if item.fit is not None and item.fit.status == "warn")
-            if failed:
-                return f"批量完成 {done}/{total}，含失败项目"
-            if warned:
-                return f"批量完成 {done}/{total}，含警告项目"
-            return f"批量完成 {done}/{total}"
-        return "等待中"
+        fit = self._latest_fit_for_spectrum(current.display_name) if current is not None else None
+        return fit_status_text(
+            fit,
+            self.state.batch_summary,
+            fit_busy=self.state.fit_busy,
+            batch_busy=self.state.batch_busy,
+            drt_busy=self.state.drt_busy,
+        )
     def _latest_fit_for_spectrum(self, display_name: str) -> FitOutcome | None:
         preferred_key = str(self.template_combo.currentData()) if hasattr(self, "template_combo") else None
         if preferred_key is not None:
@@ -896,6 +821,7 @@ class MainWindow(MSFluentWindow):
                 spectrum.minus_z_imag_ohm,
                 spectrum.z_mod_ohm,
                 spectrum.phase_deg,
+                strict=True,
             )
         ]
         self._fill_table(self.data_table, headers, rows)
@@ -1684,6 +1610,22 @@ class MainWindow(MSFluentWindow):
             coeff_value=float(self.matlab_coeff_edit.text().strip()),
             inductance_mode=int(self.matlab_inductance_combo.currentData()),
         )
+    def _current_drt_logtau_breaks(self) -> tuple[float, ...] | None:
+        raw = self.drt_logtau_breaks_edit.text().strip()
+        if not raw:
+            return None
+        normalized = raw.replace("，", ",").replace(";", ",").replace("；", ",")
+        parts = [part.strip() for part in normalized.split(",") if part.strip()]
+        try:
+            values = tuple(sorted(set(float(part) for part in parts)))
+        except ValueError as exc:
+            raise ValueError("DRT 积分分区必须是用逗号分隔的数字，例如 -3, 0 或 1, 3") from exc
+        if not values or any(not np.isfinite(value) for value in values):
+            raise ValueError("DRT 积分分区必须包含有限数字")
+        return values
+    def _current_drt_line_x_axis(self) -> str:
+        value = str(self.drt_line_x_combo.currentData())
+        return "tau" if value == "tau" else "logtau"
     def _set_drt_busy(self, busy: bool) -> None:
         self.state.drt_busy = busy
         for button in (self.run_drt_current_btn, self.run_drt_batch_btn):
@@ -1796,7 +1738,14 @@ class MainWindow(MSFluentWindow):
         self._last_matlab_result = result
         try:
             from eismaster.exporters import write_drt_only_export
-            write_drt_only_export(result.output_dir / "drt_matrix.csv", self._last_drt_spectra, result.output_dir, fmt="csv")
+            write_drt_only_export(
+                result.output_dir / "drt_matrix.xlsx",
+                self._last_drt_spectra,
+                result.output_dir,
+                fmt="xlsx",
+                logtau_breaks=self._current_drt_logtau_breaks(),
+                line_x_axis=self._current_drt_line_x_axis(),
+            )
         except Exception as exc:
             logger.warning("DRT export failed: %s", exc, exc_info=True)
             self._warn(f"DRT 矩阵导出失败: {exc}")
@@ -1988,10 +1937,8 @@ class MainWindow(MSFluentWindow):
             return
         # clear previous scatter items
         for item in self._range_scatter_items:
-            try:
+            with suppress(RuntimeError):
                 self.fit_nyquist_plot.removeItem(item)
-            except Exception:
-                pass
         self._range_scatter_items = []
         scatter = pg.ScatterPlotItem(
             spectrum.z_real_ohm, spectrum.minus_z_imag_ohm,
@@ -2029,15 +1976,7 @@ class MainWindow(MSFluentWindow):
     def _fit_has_high_error(self, fit: FitOutcome, threshold: float = 20.0) -> bool:
         return any(value > threshold for _, value in self._primary_error_values(fit))
     def _fit_error_summary(self, fit: FitOutcome | None) -> str:
-        if fit is None:
-            return ""
-        values = self._primary_error_values(fit)
-        if not values:
-            return "未计算误差"
-        high_parts = [f"{label} {value:.1f}%" for label, value in values if value > 20.0]
-        if high_parts:
-            return "超误差:" + "，".join(high_parts)
-        return "，".join(f"{label} {value:.1f}%" for label, value in values)
+        return fit_error_summary(fit)
     def _primary_error_pairs(self, fit: FitOutcome) -> list[tuple[str, str]]:
         if fit.model_key == "zview_double_rq_qrwo":
             return [("Rs_stderr_pct", "Rs"), ("Rsei_stderr_pct", "Rsei"), ("Rct_stderr_pct", "Rct")]
@@ -2096,12 +2035,7 @@ class MainWindow(MSFluentWindow):
                 item.setBackground(background)
                 item.setForeground(foreground)
     def _format_stat(self, value) -> str:
-        if value is None:
-            return ""
-        value = float(value)
-        if not np.isfinite(value):
-            return "nan"
-        return f"{value:.2f}"
+        return format_stat(value)
     def _current_spectrum(self, silent: bool = False) -> SpectrumData | None:
         row = self.state.current_index
         if 0 <= row < len(self.state.spectra):

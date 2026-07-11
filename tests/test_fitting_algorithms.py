@@ -7,13 +7,13 @@ from types import SimpleNamespace
 import numpy as np
 
 from eismaster.analysis.fitting import (
-    _attach_diagnosis,
     _adaptive_weight_floor,
+    _attach_diagnosis,
     _cnls_diagnostics,
     _cnls_selection_score,
     _estimate_cpe_n,
-    _zview_warburg_open,
     _zview_residual,
+    _zview_warburg_open,
 )
 from eismaster.analysis.segmentation import SegmentDetection
 from eismaster.models import FitOutcome, SpectrumData, SpectrumMetadata

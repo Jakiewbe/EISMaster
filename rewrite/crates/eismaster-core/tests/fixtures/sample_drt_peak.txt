@@ -1,0 +1,5 @@
+L	0
+R	1
+function	peak_height*exp(-1/2*(log_tau - peak_position)^2/peak_width^2)
+peak number	peak height	peak position	peak width
+1	2	0	0.5

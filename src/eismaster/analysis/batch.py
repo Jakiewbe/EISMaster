@@ -1,12 +1,4 @@
 from __future__ import annotations
-from typing import Optional
-
-
-
-
-
-
-
 
 import concurrent.futures
 import math
@@ -17,7 +9,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from eismaster.analysis.fitting import DrtGuide, FIT_CONFIG, build_drt_guide, fit_spectrum
+from eismaster.analysis.fitting import FIT_CONFIG, DrtGuide, build_drt_guide, fit_spectrum
 from eismaster.analysis.quality import QualityReport, assess_spectrum_quality
 from eismaster.analysis.segmentation import SegmentDetection, detect_segments
 from eismaster.models import BatchItemResult, BatchSummary, FitOutcome, SpectrumData
@@ -40,7 +32,7 @@ def _worker_auto(spectrum: SpectrumData, batch_fast: bool = True) -> tuple[FitOu
     quality = assess_spectrum_quality(spectrum, run_kk=False)
     auto_hint = detect_segments(spectrum, mode="auto")
     single_hint = detect_segments(spectrum, mode="single")
-    drt_cache: dict[str, Optional[DrtGuide]] = {}
+    drt_cache: dict[str, DrtGuide | None] = {}
     single_fit = _fit_single_safe(spectrum, SINGLE_MODEL_KEY, single_hint, batch_fast=batch_fast, drt_cache=drt_cache)
     if _should_run_double_fit(single_fit, auto_hint):
         double_hint = detect_segments(spectrum, mode="double")
@@ -97,7 +89,7 @@ def _analyze_batch_parallel_fixed(
     *,
     batch_fast: bool = True,
 ) -> list[BatchItemResult]:
-    items: list[Optional[BatchItemResult]] = [None] * len(spectra)
+    items: list[BatchItemResult | None] = [None] * len(spectra)
     total = len(spectra)
     results: dict[int, BatchItemResult] = {}
     current_idx = 0
@@ -139,7 +131,7 @@ def _analyze_batch_parallel_auto(
 ) -> list[BatchItemResult]:
     items: list[BatchItemResult] = []
     active_mode = "single"
-    pending_mode: Optional[str] = None
+    pending_mode: str | None = None
     pending_count = 0
     total = len(spectra)
     results: dict[int, tuple[FitOutcome, FitOutcome, SegmentDetection, QualityReport]] = {}
@@ -194,7 +186,7 @@ def _analyze_batch_fixed_sequential(
     total = len(spectra)
     previous_fit: FitOutcome | None = None
     for index, spectrum in enumerate(spectra, start=1):
-        drt_cache: dict[str, Optional[DrtGuide]] = {}
+        drt_cache: dict[str, DrtGuide | None] = {}
         quality = assess_spectrum_quality(spectrum, run_kk=False)
         hint = detect_segments(spectrum, mode=mode)
         fit = _fit_single_safe(spectrum, model_key, hint, warm_start=previous_fit, batch_fast=batch_fast, drt_cache=drt_cache)
@@ -215,14 +207,14 @@ def _analyze_batch_auto_sequential(
 ) -> list[BatchItemResult]:
     items: list[BatchItemResult] = []
     active_mode = "single"
-    pending_mode: Optional[str] = None
+    pending_mode: str | None = None
     pending_count = 0
     total = len(spectra)
     previous_single_fit: FitOutcome | None = None
     previous_double_fit: FitOutcome | None = None
 
     for index, spectrum in enumerate(spectra, start=1):
-        drt_cache: dict[str, Optional[DrtGuide]] = {}
+        drt_cache: dict[str, DrtGuide | None] = {}
         quality = assess_spectrum_quality(spectrum, run_kk=False)
         auto_hint = detect_segments(spectrum, mode="auto")
         single_hint = detect_segments(spectrum, mode="single")
@@ -277,9 +269,9 @@ def _choose_auto_item(
     double_fit: FitOutcome,
     auto_hint: SegmentDetection,
     active_mode: str,
-    pending_mode: Optional[str],
+    pending_mode: str | None,
     pending_count: int,
-) -> tuple[BatchItemResult, str, Optional[str], int]:
+) -> tuple[BatchItemResult, str, str | None, int]:
     preferred_mode, detail = _preferred_mode(auto_hint, single_fit, double_fit)
     active_mode, pending_mode, pending_count, headline = _apply_hysteresis(active_mode, preferred_mode, pending_mode, pending_count)
     chosen_fit = single_fit if active_mode == "single" else double_fit
@@ -293,7 +285,7 @@ def _fit_single_safe(
     hint: SegmentDetection,
     warm_start: FitOutcome | None = None,
     batch_fast: bool = True,
-    drt_cache: Optional[dict[str, Optional[DrtGuide]]] = None,
+    drt_cache: dict[str, DrtGuide | None] | None = None,
 ) -> FitOutcome:
     try:
         fit = fit_spectrum(
@@ -328,8 +320,8 @@ def _fit_single_safe(
 
 def _get_cached_drt_guide(
     spectrum: SpectrumData,
-    drt_cache: Optional[dict[str, Optional[DrtGuide]]],
-) -> Optional[DrtGuide]:
+    drt_cache: dict[str, DrtGuide | None] | None,
+) -> DrtGuide | None:
     if drt_cache is None:
         return build_drt_guide(spectrum)
     if "guide" not in drt_cache:
@@ -554,9 +546,9 @@ def _has_primary_high_error(fit: FitOutcome, threshold: float = FIT_CONFIG.prima
 def _apply_hysteresis(
     active_mode: str,
     preferred_mode: str,
-    pending_mode: Optional[str],
+    pending_mode: str | None,
     pending_count: int,
-) -> tuple[str, Optional[str], int, str]:
+) -> tuple[str, str | None, int, str]:
     if preferred_mode == active_mode:
         return active_mode, None, 0, f"Auto mode keeps {_mode_label(active_mode)}"
 
@@ -587,7 +579,7 @@ def _mode_label(mode: str) -> str:
     return "double-arc" if mode == "double" else "single-arc"
 
 
-def _finite_or(value: Optional[float], fallback: float) -> float:
+def _finite_or(value: float | None, fallback: float) -> float:
     if value is None:
         return fallback
     value = float(value)

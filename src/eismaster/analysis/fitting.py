@@ -1,14 +1,27 @@
 from __future__ import annotations
-from typing import Optional
+
 import logging
 import math
 from dataclasses import dataclass, replace
 
 import numpy as np
 
-from eismaster.analysis.circuits import CircuitTemplate, TEMPLATES, get_circuit_templates as _get_circuit_templates
-from eismaster.analysis.diagnostics import FitDiagnosis, diagnose_fit_failure
-from eismaster.analysis.preprocessing import PreprocessResult, preprocess_for_fitting
+from eismaster.analysis.circuits import TEMPLATES, CircuitTemplate
+from eismaster.analysis.circuits import get_circuit_templates as _get_circuit_templates
+from eismaster.analysis.diagnostics import diagnose_fit_failure
+from eismaster.analysis.fitting_math import (
+    adaptive_weight_floor as _adaptive_weight_floor,
+)
+from eismaster.analysis.fitting_math import (
+    estimate_cpe_n as _estimate_cpe_n,
+)
+from eismaster.analysis.fitting_math import (
+    local_noise_estimate as _local_noise_estimate,
+)
+from eismaster.analysis.fitting_math import (
+    zview_warburg_open as _zview_warburg_open,
+)
+from eismaster.analysis.preprocessing import preprocess_for_fitting
 from eismaster.analysis.segmentation import ArcRange, SegmentDetection, detect_segments
 from eismaster.models import FitOutcome, SpectrumData
 
@@ -69,47 +82,6 @@ SEED_FACTORS = (1.0, 0.55, 1.8, 0.3, 3.0, 0.1, 5.0)
 ZVIEW_CNLS_WEIGHTS = ("calc-modulus", "calc-proportional", "calc-unit", "data-special", "calc-modulus-zview")
 
 
-def _adaptive_weight_floor(z_exp: np.ndarray) -> float:
-    return max(float(np.median(np.abs(z_exp))) * 1e-4, 1e-6)
-
-
-def _estimate_cpe_n(freq: np.ndarray, z_imag_neg: np.ndarray) -> float:
-    if freq.size < 4 or z_imag_neg.size < 4:
-        return 0.85
-    keep = np.isfinite(freq) & np.isfinite(z_imag_neg) & (freq > 0) & (z_imag_neg > 0)
-    if int(keep.sum()) < 4:
-        return 0.85
-    log_f = np.log10(freq[keep].astype(float))
-    log_z = np.log10(z_imag_neg[keep].astype(float))
-    peak = int(np.argmax(z_imag_neg[keep]))
-    half_window = max(min(log_f.size // 5, 6), 2)
-    start = max(0, peak - half_window)
-    stop = min(log_f.size, peak + half_window + 1)
-    if stop - start < 4:
-        start = max(0, min(peak, log_f.size - 4))
-        stop = min(log_f.size, start + 4)
-    try:
-        slope, _ = np.polyfit(log_f[start:stop], log_z[start:stop], 1)
-    except Exception:
-        return 0.85
-    return float(np.clip(abs(slope), 0.4, 1.0))
-
-
-def _local_noise_estimate(z_exp: np.ndarray) -> np.ndarray:
-    if z_exp.size < 5:
-        return np.full(z_exp.size, _adaptive_weight_floor(z_exp), dtype=float)
-    real = np.pad(z_exp.real.astype(float), (2, 2), mode="edge")
-    imag = np.pad(z_exp.imag.astype(float), (2, 2), mode="edge")
-    real_win = np.lib.stride_tricks.sliding_window_view(real, 5)
-    imag_win = np.lib.stride_tricks.sliding_window_view(imag, 5)
-    real_med = np.median(real_win, axis=1)
-    imag_med = np.median(imag_win, axis=1)
-    local = np.hypot(real_win - real_med[:, None], imag_win - imag_med[:, None])
-    local_med = np.median(local, axis=1)
-    sigma = 1.4826 * np.median(np.abs(local - local_med[:, None]), axis=1)
-    return np.maximum(sigma, _adaptive_weight_floor(z_exp))
-
-
 def _from_arc_ranges(
     spectrum: SpectrumData,
     arc_ranges: list[ArcRange],
@@ -166,16 +138,16 @@ def _from_arc_ranges(
 def fit_spectrum(
     spectrum: SpectrumData,
     template_key: str,
-    point_mask: Optional[np.ndarray] = None,
-    segment_hint: Optional[SegmentDetection] = None,
-    arc_ranges: Optional[list[ArcRange]] = None,
-    warm_start: Optional[FitOutcome] = None,
+    point_mask: np.ndarray | None = None,
+    segment_hint: SegmentDetection | None = None,
+    arc_ranges: list[ArcRange] | None = None,
+    warm_start: FitOutcome | None = None,
     *,
     allow_fallback: bool = False,
     auto_preprocess: bool = False,
     use_drt_guided_guess: bool = True,
     batch_fast: bool = False,
-    drt_guide: Optional[DrtGuide] = None,
+    drt_guide: DrtGuide | None = None,
 ) -> FitOutcome:
     template = TEMPLATES[template_key]
     freq = spectrum.freq_hz
@@ -347,9 +319,9 @@ def _build_initial_guesses(
     spectrum: SpectrumData,
     point_mask: np.ndarray,
     *,
-    warm_start: Optional[FitOutcome] = None,
+    warm_start: FitOutcome | None = None,
     use_drt_guided_guess: bool = True,
-    drt_guide: Optional[DrtGuide] = None,
+    drt_guide: DrtGuide | None = None,
 ) -> list[GuessPack]:
     """Return one or more initial-guess packs.  The geometric strategy is
     appended when it succeeds; callers loop over all packs."""
@@ -388,8 +360,8 @@ def _build_initial_guess_drt(
     template: CircuitTemplate,
     spectrum: SpectrumData,
     point_mask: np.ndarray,
-    drt_guide: Optional[DrtGuide] = None,
-) -> Optional[GuessPack]:
+    drt_guide: DrtGuide | None = None,
+) -> GuessPack | None:
     guide = drt_guide if drt_guide is not None else build_drt_guide(spectrum)
     if guide is None:
         return None
@@ -409,7 +381,7 @@ def _build_initial_guess_drt(
     return None
 
 
-def build_drt_guide(spectrum: SpectrumData) -> Optional[DrtGuide]:
+def build_drt_guide(spectrum: SpectrumData) -> DrtGuide | None:
     try:
         from eismaster.analysis.native_drt import compute_drt, find_drt_peaks
 
@@ -422,7 +394,7 @@ def build_drt_guide(spectrum: SpectrumData) -> Optional[DrtGuide]:
     return DrtGuide(rs=float(rs_drt), peaks=normalized_peaks)
 
 
-def _build_initial_guess_from_fit(template: CircuitTemplate, warm_start: Optional[FitOutcome]) -> Optional[GuessPack]:
+def _build_initial_guess_from_fit(template: CircuitTemplate, warm_start: FitOutcome | None) -> GuessPack | None:
     if warm_start is None or warm_start.model_key != template.key:
         return None
     return None
@@ -430,7 +402,7 @@ def _build_initial_guess_from_fit(template: CircuitTemplate, warm_start: Optiona
 
 def _build_initial_guess_geometric(
     template: CircuitTemplate, spectrum: SpectrumData, point_mask: np.ndarray
-) -> Optional[GuessPack]:
+) -> GuessPack | None:
     """Try to derive initial values by fitting a circle to the Nyquist arc.
     Returns *None* when the arc is too flat or noisy for a reliable circle fit."""
     try:
@@ -470,11 +442,11 @@ def _build_initial_guess_geometric(
 def _fit_zview_global(
     spectrum: SpectrumData,
     point_mask: np.ndarray,
-    segment_hint: Optional[SegmentDetection] = None,
-    warm_start: Optional[FitOutcome] = None,
+    segment_hint: SegmentDetection | None = None,
+    warm_start: FitOutcome | None = None,
     use_drt_guided_guess: bool = True,
     batch_fast: bool = False,
-    drt_guide: Optional[DrtGuide] = None,
+    drt_guide: DrtGuide | None = None,
 ) -> FitOutcome:
     template = TEMPLATES["zview_segmented_rq_rwo"]
     if least_squares is None:
@@ -654,11 +626,11 @@ def _fit_zview_global(
 def _fit_zview_double_global(
     spectrum: SpectrumData,
     point_mask: np.ndarray,
-    segment_hint: Optional[SegmentDetection] = None,
-    warm_start: Optional[FitOutcome] = None,
+    segment_hint: SegmentDetection | None = None,
+    warm_start: FitOutcome | None = None,
     use_drt_guided_guess: bool = True,
     batch_fast: bool = False,
-    drt_guide: Optional[DrtGuide] = None,
+    drt_guide: DrtGuide | None = None,
 ) -> FitOutcome:
     template = TEMPLATES["zview_double_rq_qrwo"]
     if least_squares is None:
@@ -872,7 +844,7 @@ def _fit_zview_global_direct(
     detection: SegmentDetection,
     split_index: int,
     peak_index: int,
-    warm_start: Optional[FitOutcome] = None,
+    warm_start: FitOutcome | None = None,
 ) -> FitOutcome:
     template = TEMPLATES["zview_segmented_rq_rwo"]
     freq = spectrum.freq_hz[point_mask].astype(float)
@@ -950,7 +922,7 @@ def _fit_zview_double_global_direct(
     spectrum: SpectrumData,
     point_mask: np.ndarray,
     detection: SegmentDetection,
-    warm_start: Optional[FitOutcome] = None,
+    warm_start: FitOutcome | None = None,
 ) -> FitOutcome:
     template = TEMPLATES["zview_double_rq_qrwo"]
     freq = spectrum.freq_hz[point_mask].astype(float)
@@ -1051,9 +1023,9 @@ def _solve_zview_cnls(
     *,
     param_count: int,
     max_nfev: int = 40000,
-    weight_tags: Optional[tuple[str, ...]] = None,
-    seed_limit: Optional[int] = None,
-) -> Optional[OptimizeResult]:
+    weight_tags: tuple[str, ...] | None = None,
+    seed_limit: int | None = None,
+) -> OptimizeResult | None:
     best = None
     best_score = float("inf")
     tags = weight_tags or ZVIEW_CNLS_WEIGHTS
@@ -1222,7 +1194,7 @@ def _zview_wo_r_from_pyimpspec(y_value: float, t_value: float, p_value: float) -
     return float((t_value / y_value) ** p_value)
 
 
-def _warm_start_zview_single_seeds(warm_start: Optional[FitOutcome]) -> list[np.ndarray]:
+def _warm_start_zview_single_seeds(warm_start: FitOutcome | None) -> list[np.ndarray]:
     if warm_start is None or warm_start.model_key != "zview_segmented_rq_rwo":
         return []
     params = warm_start.parameters
@@ -1238,7 +1210,7 @@ def _warm_start_zview_single_seeds(warm_start: Optional[FitOutcome]) -> list[np.
     ]
 
 
-def _warm_start_zview_double_seeds(warm_start: Optional[FitOutcome]) -> list[np.ndarray]:
+def _warm_start_zview_double_seeds(warm_start: FitOutcome | None) -> list[np.ndarray]:
     if warm_start is None or warm_start.model_key != "zview_double_rq_qrwo":
         return []
     params = warm_start.parameters
@@ -1259,10 +1231,10 @@ def _fit_full_zview_cnls(
     point_mask: np.ndarray,
     arc_fit,
     tail_fit,
-    warm_start: Optional[FitOutcome] = None,
+    warm_start: FitOutcome | None = None,
     use_drt_guided_guess: bool = True,
     batch_fast: bool = False,
-    drt_guide: Optional[DrtGuide] = None,
+    drt_guide: DrtGuide | None = None,
 ):
     arc_elements = arc_fit.circuit.get_elements()
     tail_elements = tail_fit.circuit.get_elements()
@@ -1339,11 +1311,11 @@ def _fit_full_zview_double_cnls(
     arc1_fit,
     arc2_fit,
     tail_fit,
-    detection: Optional[SegmentDetection] = None,
-    warm_start: Optional[FitOutcome] = None,
+    detection: SegmentDetection | None = None,
+    warm_start: FitOutcome | None = None,
     use_drt_guided_guess: bool = True,
     batch_fast: bool = False,
-    drt_guide: Optional[DrtGuide] = None,
+    drt_guide: DrtGuide | None = None,
 ):
     arc1_elements = arc1_fit.circuit.get_elements()
     arc2_elements = arc2_fit.circuit.get_elements()
@@ -1487,21 +1459,6 @@ def _zview_double_model(freq_hz: np.ndarray, params: np.ndarray) -> np.ndarray:
     z_wo = _zview_warburg_open(omega, wo_r, wo_t, wo_p)
     z_arc2 = 1.0 / (1.0 / z_cpe2 + 1.0 / (np.full(freq_hz.shape, r3, dtype=complex) + z_wo))
     return rs + z_arc1 + z_arc2
-
-
-def _zview_warburg_open(omega: np.ndarray, wo_r: float, wo_t: float, wo_p: float) -> np.ndarray:
-    x = (1j * omega * wo_t) ** wo_p
-    abs_x = np.abs(x)
-    tanh_x = np.ones_like(x, dtype=complex)
-    finite_mask = abs_x <= 50.0
-    tanh_x[finite_mask] = np.tanh(x[finite_mask])
-    small = abs_x < 1e-8
-    denom = x * tanh_x
-    if np.any(small):
-        # tanh(x) = x - x^3/3 + O(x^5), so x*tanh(x) = x^2 - x^4/3 + O(x^6)
-        denom = np.where(small, x * x * (1.0 - (x * x) / 3.0), denom)
-    denom = np.where(np.abs(denom) < 1e-30, 1e-30 + 0.0j, denom)
-    return wo_r / denom
 
 
 def _zview_statistics(result, n_points: int) -> dict[str, float]:
@@ -1844,7 +1801,7 @@ def _attach_diagnosis(
     outcome: FitOutcome,
     spectrum: SpectrumData,
     template_key: str,
-    segment_hint: Optional[SegmentDetection],
+    segment_hint: SegmentDetection | None,
 ) -> FitOutcome:
     """Attach a structured diagnosis when the outcome is not *ok*."""
     if outcome.status == "ok":

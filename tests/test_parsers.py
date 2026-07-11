@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-import unittest
-from pathlib import Path
 import shutil
 import struct
+import unittest
+from pathlib import Path
 
 import numpy as np
 
 from eismaster.analysis.fitting import fit_spectrum
 from eismaster.analysis.quality import assess_spectrum_quality
 from eismaster.analysis.segmentation import detect_segments
-from eismaster.io.chi import load_spectrum, load_spectra_from_folder
+from eismaster.io.chi import load_spectra_from_folder, load_spectrum
 from eismaster.models import SpectrumData, SpectrumMetadata
-
+from tests.fixture_factory import SINGLE_ROWS, make_double_arc_spectrum, write_single_arc_bin, write_single_arc_txt
 
 ROOT = Path(__file__).resolve().parents[1]
-TXT_SAMPLE = ROOT / "Ag_EIS_OCV.txt"
-BIN_SAMPLE = ROOT / "Ag_EIS_OCV.bin"
-DOUBLE_SAMPLE = next(ROOT.glob("*放电完后.txt"))
 
 
 class ParserTests(unittest.TestCase):
@@ -26,22 +23,34 @@ class ParserTests(unittest.TestCase):
         if self.tmp_root.exists():
             shutil.rmtree(self.tmp_root)
         self.tmp_root.mkdir(parents=True, exist_ok=True)
+        self.txt_sample = write_single_arc_txt(self.tmp_root / "Ag_EIS_OCV.txt")
+        self.bin_sample = write_single_arc_bin(self.tmp_root / "Ag_EIS_OCV.bin")
+        self.double_spectrum = make_double_arc_spectrum(self.tmp_root / "double_arc.txt")
 
     def tearDown(self) -> None:
         if self.tmp_root.exists():
             shutil.rmtree(self.tmp_root)
 
+    def test_generated_txt_and_bin_match(self) -> None:
+        txt = write_single_arc_txt(self.tmp_root / "single.txt")
+        binary = write_single_arc_bin(self.tmp_root / "single.bin")
+        txt_spectrum = load_spectrum(txt)
+        bin_spectrum = load_spectrum(binary)
+        np.testing.assert_allclose(bin_spectrum.freq_hz, txt_spectrum.freq_hz, rtol=1e-4)
+        np.testing.assert_allclose(bin_spectrum.z_real_ohm, txt_spectrum.z_real_ohm, rtol=1e-5)
+        np.testing.assert_allclose(bin_spectrum.z_imag_ohm, txt_spectrum.z_imag_ohm, rtol=1e-5)
+
     def test_txt_sample_parses(self) -> None:
-        spectrum = load_spectrum(TXT_SAMPLE)
+        spectrum = load_spectrum(self.txt_sample)
         self.assertEqual(spectrum.metadata.instrument_model, "CHI660F")
         self.assertEqual(spectrum.n_points, 85)
-        self.assertAlmostEqual(float(spectrum.freq_hz[0]), 9.668e4, places=0)
-        self.assertAlmostEqual(float(spectrum.z_real_ohm[0]), 5.740, places=3)
-        self.assertAlmostEqual(float(spectrum.z_imag_ohm[0]), -4.091e-1, places=4)
+        self.assertAlmostEqual(float(spectrum.freq_hz[0]), SINGLE_ROWS[0][0], places=3)
+        self.assertAlmostEqual(float(spectrum.z_real_ohm[0]), SINGLE_ROWS[0][1], places=8)
+        self.assertAlmostEqual(float(spectrum.z_imag_ohm[0]), SINGLE_ROWS[0][2], places=8)
 
     def test_bin_sample_matches_txt_within_binary_precision(self) -> None:
-        txt_spectrum = load_spectrum(TXT_SAMPLE)
-        bin_spectrum = load_spectrum(BIN_SAMPLE)
+        txt_spectrum = load_spectrum(self.txt_sample)
+        bin_spectrum = load_spectrum(self.bin_sample)
         self.assertEqual(bin_spectrum.n_points, txt_spectrum.n_points)
         np.testing.assert_allclose(bin_spectrum.freq_hz, txt_spectrum.freq_hz, rtol=1e-4, atol=5.0)
         np.testing.assert_allclose(bin_spectrum.z_real_ohm, txt_spectrum.z_real_ohm, rtol=1e-3, atol=0.05)
@@ -73,7 +82,7 @@ class ParserTests(unittest.TestCase):
         np.testing.assert_allclose(spectrum.z_imag_ohm, [row[3] for row in rows], rtol=1e-6)
 
     def test_fitting_smoke_for_single_semicircle_model(self) -> None:
-        spectrum = load_spectrum(TXT_SAMPLE)
+        spectrum = load_spectrum(self.txt_sample)
         fit = fit_spectrum(spectrum, "zview_segmented_rq_rwo")
         self.assertIn(fit.status, {"ok", "warn"})
         self.assertGreater(fit.parameters["Rs"], 0.0)
@@ -81,7 +90,7 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(np.isfinite(fit.statistics["rss"]))
 
     def test_fitting_smoke_for_double_semicircle_model(self) -> None:
-        spectrum = load_spectrum(DOUBLE_SAMPLE)
+        spectrum = self.double_spectrum
         fit = fit_spectrum(spectrum, "zview_double_rq_qrwo")
         self.assertIn(fit.status, {"ok", "warn"})
         self.assertGreater(fit.parameters["Rs"], 0.0)
@@ -93,7 +102,7 @@ class ParserTests(unittest.TestCase):
         self.assertIn("Rct_global_stderr_pct", fit.statistics)
 
     def test_double_segmentation_accepts_manual_peaks_and_splits(self) -> None:
-        spectrum = load_spectrum(DOUBLE_SAMPLE)
+        spectrum = self.double_spectrum
         detection = detect_segments(
             spectrum,
             mode="double",
@@ -189,19 +198,21 @@ class ParserTests(unittest.TestCase):
         self.assertAlmostEqual(float(spectrum.z_imag_ohm[2]), -1.1)
 
     def test_folder_import_skips_bad_supported_file_when_others_are_valid(self) -> None:
-        good = self.tmp_root / "good.txt"
-        bad = self.tmp_root / "bad.txt"
+        folder = self.tmp_root / "folder_import"
+        folder.mkdir()
+        good = folder / "good.txt"
+        bad = folder / "bad.txt"
         good.write_text(
             "1000,5.1,-0.2\n100,5.4,-0.5\n10,6.2,-1.1\n",
             encoding="utf-8",
         )
         bad.write_text("this is not an eis file\njust notes\n", encoding="utf-8")
-        spectra = load_spectra_from_folder(self.tmp_root)
+        spectra = load_spectra_from_folder(folder)
         self.assertEqual(len(spectra), 1)
         self.assertEqual(spectra[0].metadata.file_path.name, "good.txt")
 
     def test_quality_report_summary_lines_are_human_readable(self) -> None:
-        spectrum = load_spectrum(TXT_SAMPLE)
+        spectrum = load_spectrum(self.txt_sample)
         quality = assess_spectrum_quality(spectrum, run_kk=False)
         self.assertEqual(spectrum.acquired_label, "未知")
         self.assertEqual(quality.kk_message, "KK/Z-HIT 未执行。")

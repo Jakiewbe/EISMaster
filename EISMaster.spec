@@ -12,6 +12,10 @@ datas = collect_data_files("eismaster")
 matlab_bridge = ROOT / "matlab_bridge"
 if matlab_bridge.exists():
     datas.append((str(matlab_bridge), "matlab_bridge"))
+drttools_dir = ROOT / "matlab-DRTtools-local"
+if not drttools_dir.is_dir():
+    raise FileNotFoundError(f"Required DRTtools resource is missing: {drttools_dir}")
+datas.append((str(drttools_dir), "matlab-DRTtools-local"))
 
 hiddenimports = collect_submodules("qfluentwidgets") + collect_submodules(
     "pyqtgraph",

@@ -30,6 +30,12 @@ CFx_*_raw_plot.txt
 CFx_*_rs_rct.txt
 Ag_EIS_OCV/
 
+# Rust/Tauri generated output
+rewrite/target/
+rewrite/apps/eismaster-tauri/node_modules/
+rewrite/apps/eismaster-tauri/dist/
+dist_rebuild*/
+
 # Local MATLAB DRTtools checkout and generated DRT batches
 matlab-DRTtools-local/
 1/

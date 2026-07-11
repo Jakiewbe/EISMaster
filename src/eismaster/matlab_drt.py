@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import os
-import sys
-from dataclasses import dataclass, field
-from pathlib import Path
 import shutil
 import subprocess
-from typing import Iterable
+import sys
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from eismaster.models import SpectrumData
-
 
 _COMMON_MATLAB_PATHS = [
     r"C:\Program Files\MATLAB\R2024b\bin\matlab.exe",
@@ -59,6 +58,18 @@ class MatlabDrtResult:
     output_dir: Path
 
 
+def validate_matlab_drt_config(config: MatlabDrtConfig) -> None:
+    matlab = Path(config.matlab_exe)
+    if not matlab.is_file():
+        raise FileNotFoundError(f"MATLAB executable not found: {matlab}")
+    drttools = Path(config.drttools_dir)
+    if not drttools.is_dir():
+        raise FileNotFoundError(f"DRTtools directory not found: {drttools}")
+    runner = _matlab_runner_path()
+    if not runner.is_file():
+        raise FileNotFoundError(f"MATLAB runner not found: {runner}")
+
+
 def stage_matlab_drt_inputs(spectra: Iterable[SpectrumData], base_output_dir: str | Path) -> Path:
     base = Path(base_output_dir)
     staging_dir = base / "matlab_drt_inputs"
@@ -72,6 +83,7 @@ def stage_matlab_drt_inputs(spectra: Iterable[SpectrumData], base_output_dir: st
 
 
 def run_matlab_drt(config: MatlabDrtConfig, staging_dir: str | Path, output_dir: str | Path) -> MatlabDrtResult:
+    validate_matlab_drt_config(config)
     staging = Path(staging_dir)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -85,6 +97,9 @@ def run_matlab_drt(config: MatlabDrtConfig, staging_dir: str | Path, output_dir:
     )
     command = [config.matlab_exe, "-batch", matlab_call]
     completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "MATLAB DRT failed").strip()
+        raise RuntimeError(f"MATLAB DRT failed with exit code {completed.returncode}: {detail}")
     output_files = sorted(output.glob("*_DRT.txt"))
     return MatlabDrtResult(
         command=command,
@@ -99,7 +114,7 @@ def run_matlab_drt(config: MatlabDrtConfig, staging_dir: str | Path, output_dir:
 
 def _write_raw_impedance_input(path: Path, spectrum: SpectrumData) -> None:
     lines = []
-    for freq, z_real, z_imag in zip(spectrum.freq_hz, spectrum.z_real_ohm, spectrum.z_imag_ohm):
+    for freq, z_real, z_imag in zip(spectrum.freq_hz, spectrum.z_real_ohm, spectrum.z_imag_ohm, strict=True):
         lines.append(f"{freq:.12g}\t{z_real:.12g}\t{z_imag:.12g}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

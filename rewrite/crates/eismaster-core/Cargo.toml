@@ -1,0 +1,11 @@
+[package]
+name = "eismaster-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core data models and parsers for EISMaster"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+rust_xlsxwriter = "0.79"
+num-complex = "0.4"

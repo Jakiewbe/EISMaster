@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "Default capability for EISMaster",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-open"
+  ]
+}

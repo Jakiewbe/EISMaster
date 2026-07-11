@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+import numpy as np
 
 from eismaster.analysis.batch import (
     _apply_hysteresis,
     _candidate_score,
     _finite_or,
-    _fit_single_safe,
     _fit_scientific_score,
+    _fit_single_safe,
     _mode_label,
     _needs_expensive_retry,
     _should_run_double_fit,
@@ -16,8 +19,6 @@ from eismaster.analysis.batch import (
 from eismaster.analysis.fitting import DrtGuide
 from eismaster.analysis.segmentation import SegmentDetection
 from eismaster.models import FitOutcome, SpectrumData, SpectrumMetadata
-import numpy as np
-from pathlib import Path
 
 
 class BatchAutoTests(unittest.TestCase):
@@ -63,7 +64,6 @@ class BatchAutoTests(unittest.TestCase):
         self.assertEqual(_finite_or(3.14, 42.0), 3.14)
 
     def test_finite_or_with_nan(self) -> None:
-        import math
         self.assertEqual(_finite_or(float("nan"), 42.0), 42.0)
 
     def test_finite_or_with_inf(self) -> None:

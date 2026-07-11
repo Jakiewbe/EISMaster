@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/eismaster-core",
+    "crates/eismaster-cli",
+    "apps/eismaster-tauri/src-tauri",
+]
