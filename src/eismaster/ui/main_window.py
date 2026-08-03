@@ -34,6 +34,7 @@ from eismaster.io import load_spectra_from_folder, load_spectrum
 from eismaster.matlab_drt import MatlabDrtConfig, MatlabDrtResult
 from eismaster.models import BatchSummary, FitOutcome, QualityReport, SpectrumData
 from eismaster.ui.presenters import fit_error_summary, fit_status_text, format_stat
+from eismaster.ui.cc_page import CCCurvePage
 from eismaster.ui.segment_overlay import SegmentBoundaries, SegmentOverlay
 from eismaster.ui.split_slider import SplitSlider
 from eismaster.ui.state import AppState
@@ -133,14 +134,17 @@ class MainWindow(MSFluentWindow):
         self.inspect_widget, _ = self._build_inspect_tab()
         self.fit_widget, _ = self._build_fit_tab()
         self.batch_widget, _ = self._build_batch_tab()
+        self.cc_widget = CCCurvePage()
         # Set object names for navigation tracking
         self.inspect_widget.setObjectName("inspectInterface")
         self.fit_widget.setObjectName("fitInterface")
         self.batch_widget.setObjectName("batchInterface")
+        self.cc_widget.setObjectName("ccInterface")
         # Register interfaces to MSFluentWindow sidebar
         self.addSubInterface(self.inspect_widget, FIF.TAG, "谱图")
         self.addSubInterface(self.fit_widget, FIF.SETTING, "拟合")
         self.addSubInterface(self.batch_widget, FIF.UPDATE, "批量拟合")
+        self.addSubInterface(self.cc_widget, FIF.TAG, "CC曲线")
         # Connect navigation signal to refresh content
         self.stackedWidget.currentChanged.connect(self._on_tab_changed)
     def _build_header(self) -> QWidget:
