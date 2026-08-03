@@ -6,7 +6,6 @@ import pandas as pd
 
 from eismaster.cc_curves import CCCurve
 
-
 CC_CURVE_COLUMNS = [
     "sample_id",
     "mode",

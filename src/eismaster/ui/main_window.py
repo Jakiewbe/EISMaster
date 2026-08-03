@@ -33,8 +33,8 @@ from eismaster.exporters import export_batch_summary, export_spectrum_bundle
 from eismaster.io import load_spectra_from_folder, load_spectrum
 from eismaster.matlab_drt import MatlabDrtConfig, MatlabDrtResult
 from eismaster.models import BatchSummary, FitOutcome, QualityReport, SpectrumData
-from eismaster.ui.presenters import fit_error_summary, fit_status_text, format_stat
 from eismaster.ui.cc_page import CCCurvePage
+from eismaster.ui.presenters import fit_error_summary, fit_status_text, format_stat
 from eismaster.ui.segment_overlay import SegmentBoundaries, SegmentOverlay
 from eismaster.ui.split_slider import SplitSlider
 from eismaster.ui.state import AppState

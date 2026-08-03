@@ -11,7 +11,6 @@ from eismaster.ui.cc_page import CCCurvePage
 from eismaster.ui.main_window import MainWindow
 from tests.cc_fixtures import write_cc_bin
 
-
 APP = QApplication.instance() or QApplication([])
 
 

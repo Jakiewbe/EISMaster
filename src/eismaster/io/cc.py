@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 CC_COUNT_OFFSET = 0x262
 CC_INTERVAL_OFFSET = 0x492
 CC_CURRENT_OFFSET = 0x4C4

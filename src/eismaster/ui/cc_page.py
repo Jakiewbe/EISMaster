@@ -3,12 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
-    QHeaderView,
     QHBoxLayout,
+    QHeaderView,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -153,9 +152,6 @@ class CCCurvePage(QWidget):
         table.setRowCount(len(frame))
         for row_index, row in enumerate(frame.itertuples(index=False, name=None)):
             for column_index, value in enumerate(row):
-                if isinstance(value, float):
-                    text = f"{value:.8g}"
-                else:
-                    text = str(value)
+                text = f"{value:.8g}" if isinstance(value, float) else str(value)
                 table.setItem(row_index, column_index, QTableWidgetItem(text))
         table.setUpdatesEnabled(True)
