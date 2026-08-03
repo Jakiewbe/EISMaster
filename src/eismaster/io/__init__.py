@@ -1,3 +1,10 @@
 from .chi import load_spectrum, load_spectra_from_folder
+from .cc import CCSegment, load_cc_segments_from_folder, parse_cc_bin
 
-__all__ = ["load_spectrum", "load_spectra_from_folder"]
+__all__ = [
+    "CCSegment",
+    "load_cc_segments_from_folder",
+    "load_spectrum",
+    "load_spectra_from_folder",
+    "parse_cc_bin",
+]
