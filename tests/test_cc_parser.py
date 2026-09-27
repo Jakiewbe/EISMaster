@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 
 from eismaster.io.cc import load_cc_segments_from_folder, parse_cc_bin
-from tests.cc_fixtures import write_cc_bin, write_eis_marker
+from tests.cc_fixtures import write_cc_bin, write_eis_marker, write_istep_cc_bin
 
 
-def test_parse_cc_bin_decodes_header_interval_direction_and_voltage(tmp_path: Path) -> None:
+def test_parse_cc_bin_decodes_data_storage_interval_direction_and_voltage(tmp_path: Path) -> None:
     path = write_cc_bin(tmp_path / "L_S01_CC_4p00V.bin", [3.0, 3.2, 4.0], current_raw=-18128)
 
     segment = parse_cc_bin(path)
@@ -16,7 +16,7 @@ def test_parse_cc_bin_decodes_header_interval_direction_and_voltage(tmp_path: Pa
     assert segment.sample_id == "S01"
     assert segment.target_voltage_v == pytest.approx(4.0)
     assert segment.mode == "charge"
-    assert segment.sample_interval_s == pytest.approx(0.01)
+    assert segment.sample_interval_s == pytest.approx(2.0)
     assert segment.voltage_v.tolist() == pytest.approx([3.0, 3.2, 4.0])
 
 
@@ -45,3 +45,24 @@ def test_parse_cc_bin_rejects_voltage_direction_conflict(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="voltage direction"):
         parse_cc_bin(path)
+
+
+def test_folder_loader_recognizes_istep_coe_cc_files(tmp_path: Path) -> None:
+    write_istep_cc_bin(tmp_path / "CFx_S01_CC_T20M.bin", [2.4, 2.5, 2.6])
+
+    segments = load_cc_segments_from_folder(tmp_path)
+
+    assert len(segments) == 1
+    assert segments[0].sample_id == "S01"
+    assert segments[0].mode == "charge"
+    assert segments[0].sample_interval_s == pytest.approx(1.0)
+    assert segments[0].sequence_key == pytest.approx(20.0)
+
+
+def test_folder_loader_uses_overall_istep_direction(tmp_path: Path) -> None:
+    write_istep_cc_bin(tmp_path / "CFx_S01_CC_T20M.bin", [2.4, 2.5])
+    write_istep_cc_bin(tmp_path / "CFx_S01_CC_T40M.bin", [2.5, 2.0])
+
+    segments = load_cc_segments_from_folder(tmp_path)
+
+    assert [segment.mode for segment in segments] == ["discharge", "discharge"]

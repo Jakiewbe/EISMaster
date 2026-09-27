@@ -51,7 +51,7 @@ class CCCurvePage(QWidget):
         action_row.addStretch(1)
         layout.addLayout(action_row)
 
-        layout.addWidget(CaptionLabel("只读取 CP/Chronopotentiometry 文件，EIS 和静置数据不会进入曲线。"))
+        layout.addWidget(CaptionLabel("读取 CP 或 ISTEP/Multi-Current Steps 文件；EIS、静置和不完整文件不会进入曲线。"))
         self.status_label = BodyLabel("尚未加载 CC 文件。")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -126,6 +126,7 @@ class CCCurvePage(QWidget):
                 pen=pg.mkPen(colors[index % len(colors)], width=2),
                 name=f"{curve.sample_id} {curve.mode}",
             )
+        self.plot.autoRange()
 
     def _clear_views(self) -> None:
         self.plot.clear()

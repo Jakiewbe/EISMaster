@@ -189,6 +189,9 @@ def build_rs_rct_table(pairs: list[tuple[SpectrumData, FitOutcome | None]]) -> p
                 "Rs": np.nan if fit is None else fit.parameters.get("Rs", np.nan),
                 "Rct": np.nan if fit is None else fit.parameters.get("Rct", np.nan),
                 "Rsei": np.nan if fit is None else fit.parameters.get("Rsei", np.nan),
+                "Wo_R": np.nan if fit is None else fit.parameters.get("Wo_R", np.nan),
+                "Wo_T": np.nan if fit is None else fit.parameters.get("Wo_T", np.nan),
+                "Wo_P": np.nan if fit is None else fit.parameters.get("Wo_P", np.nan),
             }
         )
     return pd.DataFrame(rows)

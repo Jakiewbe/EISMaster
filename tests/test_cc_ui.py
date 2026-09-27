@@ -30,4 +30,17 @@ def test_cc_page_loads_folder_and_shows_curve(tmp_path: Path) -> None:
     page.load_folder(tmp_path)
 
     assert len(page.curves) == 1
+
+
+def test_cc_page_autoscales_time_axis_to_loaded_curve(tmp_path: Path) -> None:
+    write_cc_bin(
+        tmp_path / "L_S01_CC_4p00V.bin",
+        [3.0 + index * 0.001 for index in range(301)],
+        current_raw=-18128,
+    )
+
+    page = CCCurvePage()
+    page.load_folder(tmp_path)
+
+    assert page.plot.viewRange()[0][1] > 2.0
     assert page.status_label.text().startswith("已加载")

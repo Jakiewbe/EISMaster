@@ -21,6 +21,19 @@ def segment(sample_id: str, mode: str, target_voltage: float, voltages: list[flo
     )
 
 
+def istep_segment(sample_id: str, mode: str, sequence_key: float, voltages: list[float]) -> CCSegment:
+    return CCSegment(
+        source_path=Path(f"{sample_id}_CC_T{sequence_key:g}M.bin"),
+        sample_id=sample_id,
+        target_voltage_v=None,
+        mode=mode,
+        sample_interval_s=1.0,
+        voltage_v=np.asarray(voltages, dtype=float),
+        current_sign_raw=-1 if mode == "charge" else 1,
+        sequence_key=sequence_key,
+    )
+
+
 def test_charge_segments_are_sorted_by_target_and_time_is_continuous() -> None:
     segments = [
         segment("S01", "charge", 4.2, [4.0, 4.2]),
@@ -53,3 +66,15 @@ def test_discharge_segments_are_sorted_by_target_descending_and_separated_from_c
     discharge = next(curve for curve in curves if curve.mode == "discharge")
     assert discharge.source_file[0].endswith("4p20V.bin")
     assert discharge.source_file[2].endswith("2p00V.bin")
+
+
+def test_istep_segments_are_sorted_by_elapsed_time() -> None:
+    curve = merge_cc_segments(
+        [
+            istep_segment("S01", "charge", 40, [3.0, 3.1]),
+            istep_segment("S01", "charge", 20, [2.8, 2.9]),
+        ]
+    )[0]
+
+    assert curve.source_file[0].endswith("T20M.bin")
+    assert curve.source_file[2].endswith("T40M.bin")

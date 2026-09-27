@@ -37,11 +37,17 @@ def merge_cc_segments(segments: list[CCSegment]) -> list[CCCurve]:
 
     curves: list[CCCurve] = []
     for (sample_id, mode), group in sorted(grouped.items()):
-        ordered = sorted(
-            group,
-            key=lambda segment: segment.target_voltage_v,
-            reverse=mode == "discharge",
-        )
+        if any(segment.sequence_key is not None for segment in group):
+            ordered = sorted(
+                group,
+                key=lambda segment: float("inf") if segment.sequence_key is None else segment.sequence_key,
+            )
+        else:
+            ordered = sorted(
+                group,
+                key=lambda segment: segment.target_voltage_v,
+                reverse=mode == "discharge",
+            )
         total_time_parts: list[np.ndarray] = []
         segment_time_parts: list[np.ndarray] = []
         voltage_parts: list[np.ndarray] = []

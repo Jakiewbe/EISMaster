@@ -1,0 +1,23 @@
+method	simple
+drt_type	1
+lambda	0.001
+coeff	0.5
+file	CFx_EIS_OCV.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_EIS_OCV_DRT.txt
+file	CFx_S01_EIS_T100M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T100M_DRT.txt
+file	CFx_S01_EIS_T120M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T120M_DRT.txt
+file	CFx_S01_EIS_T140M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T140M_DRT.txt
+file	CFx_S01_EIS_T160M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T160M_DRT.txt
+file	CFx_S01_EIS_T180M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T180M_DRT.txt
+file	CFx_S01_EIS_T200M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T200M_DRT.txt
+file	CFx_S01_EIS_T20M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T20M_DRT.txt
+file	CFx_S01_EIS_T220M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T220M_DRT.txt
+file	CFx_S01_EIS_T240M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T240M_DRT.txt
+file	CFx_S01_EIS_T260M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T260M_DRT.txt
+file	CFx_S01_EIS_T280M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T280M_DRT.txt
+file	CFx_S01_EIS_T300M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T300M_DRT.txt
+file	CFx_S01_EIS_T320M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T320M_DRT.txt
+file	CFx_S01_EIS_T340M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T340M_DRT.txt
+file	CFx_S01_EIS_T360M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T360M_DRT.txt
+file	CFx_S01_EIS_T40M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T40M_DRT.txt
+file	CFx_S01_EIS_T60M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T60M_DRT.txt
+file	CFx_S01_EIS_T80M.txt	C:\Users\chs\Desktop\11111\COE\DRT\matlab_drt_batch\results\CFx_S01_EIS_T80M_DRT.txt

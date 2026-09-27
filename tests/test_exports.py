@@ -54,7 +54,7 @@ class ExportTests(unittest.TestCase):
         fit_text = paths["fit_overlay"].read_text(encoding="utf-8").splitlines()[0]
         fit_second = paths["fit_overlay"].read_text(encoding="utf-8").splitlines()[1]
         self.assertEqual(plot_text, "OCV\t")
-        self.assertEqual(rs_rct_text, "label\tfile\tRs\tRct\tRsei")
+        self.assertEqual(rs_rct_text, "label\tfile\tRs\tRct\tRsei\tWo_R\tWo_T\tWo_P")
         self.assertEqual(fit_text, "OCV\t\t\t")
         self.assertEqual(fit_second, "z_real_exp\timag_exp_pos\tz_real_fit\timag_fit_pos")
 
@@ -66,7 +66,7 @@ class ExportTests(unittest.TestCase):
             model_label="Demo Model",
             status="ok",
             message="ok",
-            parameters={"Rs": 5.8, "Rct": 120.0},
+            parameters={"Rs": 5.8, "Rct": 120.0, "Wo_R": 15.0, "Wo_T": 2.5, "Wo_P": 0.5},
             statistics={"rss": 1.2, "aic": 2.3, "bic": 3.4, "chi2_reduced": 0.12},
             predicted_real_ohm=spectrum.z_real_ohm.copy(),
             predicted_imag_ohm=spectrum.z_imag_ohm.copy(),
@@ -75,10 +75,14 @@ class ExportTests(unittest.TestCase):
         fit_paths = export_fit_results(self.tmp_root / "fit", spectrum, quality, fit)
         summary_paths = export_batch_summary(self.tmp_root / "fit", summary)
         params_header = fit_paths["rs_rct"].read_text(encoding="utf-8").splitlines()[0]
+        params_row = fit_paths["rs_rct"].read_text(encoding="utf-8").splitlines()[1]
         batch_header = summary_paths["rs_rct"].read_text(encoding="utf-8").splitlines()[0]
+        batch_row = summary_paths["rs_rct"].read_text(encoding="utf-8").splitlines()[1]
         curve_header = fit_paths["fit_overlay"].read_text(encoding="utf-8").splitlines()[0]
-        self.assertIn("label\tfile\tRs\tRct", params_header)
-        self.assertIn("label\tfile\tRs\tRct", batch_header)
+        self.assertEqual(params_header, "label\tfile\tRs\tRct\tRsei\tWo_R\tWo_T\tWo_P")
+        self.assertEqual(batch_header, "label\tfile\tRs\tRct\tRsei\tWo_R\tWo_T\tWo_P")
+        self.assertTrue(params_row.endswith("15.0\t2.5\t0.5"))
+        self.assertTrue(batch_row.endswith("15.0\t2.5\t0.5"))
         self.assertEqual(curve_header, "OCV\t\t\t")
 
     def test_xlsx_export_creates_workbook(self) -> None:
@@ -89,7 +93,7 @@ class ExportTests(unittest.TestCase):
             model_label="Demo Model",
             status="ok",
             message="ok",
-            parameters={"Rs": 5.8, "Rct": 120.0},
+            parameters={"Rs": 5.8, "Rct": 120.0, "Wo_R": 15.0, "Wo_T": 2.5, "Wo_P": 0.5},
             statistics={"rss": 1.2, "aic": 2.3, "bic": 3.4, "chi2_reduced": 0.12},
             predicted_real_ohm=spectrum.z_real_ohm.copy(),
             predicted_imag_ohm=spectrum.z_imag_ohm.copy(),
@@ -99,6 +103,13 @@ class ExportTests(unittest.TestCase):
         self.assertIn("workbook", paths)
         self.assertTrue(paths["workbook"].exists())
         self.assertEqual(paths["workbook"].suffix, ".xlsx")
+        workbook = load_workbook(paths["workbook"], read_only=True, data_only=True)
+        try:
+            rows = list(workbook["rs_rct"].iter_rows(values_only=True))
+            self.assertEqual(rows[0], ("label", "file", "Rs", "Rct", "Rsei", "Wo_R", "Wo_T", "Wo_P"))
+            self.assertEqual(rows[1][-3:], (15.0, 2.5, 0.5))
+        finally:
+            workbook.close()
 
     def test_xlsx_batch_export(self) -> None:
         spectrum = load_spectrum(self.txt_sample)
@@ -108,7 +119,7 @@ class ExportTests(unittest.TestCase):
             model_label="Demo Model",
             status="ok",
             message="ok",
-            parameters={"Rs": 5.8, "Rct": 120.0},
+            parameters={"Rs": 5.8, "Rct": 120.0, "Wo_R": 15.0, "Wo_T": 2.5, "Wo_P": 0.5},
             statistics={"rss": 1.2, "aic": 2.3, "bic": 3.4, "chi2_reduced": 0.12},
             predicted_real_ohm=spectrum.z_real_ohm.copy(),
             predicted_imag_ohm=spectrum.z_imag_ohm.copy(),
