@@ -197,27 +197,27 @@ EIS、静置和没有完整数据点的 ISTEP 文件不会进入曲线；已识�
 
 **电路拟合。** 对每个频点同时处理阻抗实部和虚部，优化目标为：
 
-$$
+```math
 \min_{\theta}\sum_i\left[
-\left(\frac{\operatorname{Re}(Z_{\mathrm{model},i}(\theta)-Z_{\mathrm{exp},i})}{s_{\mathrm{Re},i}}\right)^2+
-\left(\frac{\operatorname{Im}(Z_{\mathrm{model},i}(\theta)-Z_{\mathrm{exp},i})}{s_{\mathrm{Im},i}}\right)^2
+\left(\frac{\mathrm{Re}(Z_{\mathrm{model},i}(\theta)-Z_{\mathrm{exp},i})}{s_{\mathrm{Re},i}}\right)^2+
+\left(\frac{\mathrm{Im}(Z_{\mathrm{model},i}(\theta)-Z_{\mathrm{exp},i})}{s_{\mathrm{Im},i}}\right)^2
 \right].
-$$
+```
 
-$\theta$ 是电路参数，$s$ 是所选残差缩放量。代码提供等权、按实测模值、按实部 / 虚部分量、按局部噪声估计以及按模型模值缩放的路径。不同权重会改变残差目标，比较统计量时需要同时记录模型、数据范围和权重，不能把分数差异直接解释为物理机制的证明。
+$`\theta`$ 是电路参数，$`s`$ 是所选残差缩放量。代码提供等权、按实测模值、按实部 / 虚部分量、按局部噪声估计以及按模型模值缩放的路径。不同权重会改变残差目标，比较统计量时需要同时记录模型、数据范围和权重，不能把分数差异直接解释为物理机制的证明。
 
-**电路元件。** 代码中 CPE 使用 $Z_Q=1/[Q(j\omega)^n]$；开路有限长度扩散元件使用 $Z_{Wo}=R_{Wo}/[u\tanh(u)]$，其中 $u=(j\omega T_{Wo})^{P_{Wo}}$、$\omega=2\pi f$。公式对应 [fitting.py](src/eismaster/analysis/fitting.py) 和 [fitting_math.py](src/eismaster/analysis/fitting_math.py) 的实际实现。
+**电路元件。** 代码中 CPE 使用 $`Z_Q=1/[Q(j\omega)^n]`$；开路有限长度扩散元件使用 $`Z_{Wo}=R_{Wo}/[u\tanh(u)]`$，其中 $`u=(j\omega T_{Wo})^{P_{Wo}}`$、$`\omega=2\pi f`$。公式对应 [fitting.py](src/eismaster/analysis/fitting.py) 和 [fitting_math.py](src/eismaster/analysis/fitting_math.py) 的实际实现。
 
 **Python 原生 DRT。** 在对数时间常数网格上建立离散系统：
 
-$$
+```math
 \widehat Z_i=R_s+\sum_k\frac{g_k}{1+j\,2\pi f_i\tau_k},
 \qquad
 \min_{g\geq0,\ R_s\geq0}
 \left\|W^{1/2}(Ax-b)\right\|_2^2+\lambda\left\|D_1g\right\|_2^2.
-$$
+```
 
-$x$ 包含非负系数 $g$ 与 $R_s$，$b$ 拼接实部和虚部，$D_1$ 为一阶差分矩阵。每个频点的权重取 $1/\max(|Z_i|^2,10^{-8})$，实部与虚部使用相同权重。这里的 $g_k$ 是该离散系统的系数，不直接等同于 MATLAB RBF 方法中的连续谱密度；当前用途是辅助建立拟合初值。
+$`x`$ 包含非负系数 $`g`$ 与 $`R_s`$，$`b`$ 拼接实部和虚部，$`D_1`$ 为一阶差分矩阵。每个频点的权重取 $`1/\max(|Z_i|^2,10^{-8})`$，实部与虚部使用相同权重。这里的 $`g_k`$ 是该离散系统的系数，不直接等同于 MATLAB RBF 方法中的连续谱密度；当前用途是辅助建立拟合初值。
 
 **不确定度与自动筛选。** 电路拟合的 95% 区间是局部线性化近似，不是对整个参数空间的概率采样结果。自动模型选择还结合误差和诊断惩罚；质量状态、参数相关性和原始残差应与统计量一起判断。MATLAB 贝叶斯区间来自独立的 DRTtools 计算流程。
 
