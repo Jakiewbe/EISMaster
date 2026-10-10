@@ -48,7 +48,7 @@ Excel 将各类数据写入独立工作表；TXT / CSV 将它们写入同名后�
 
 | 工作表 / 文件后缀 | 内容 |
 | --- | --- |
-| `raw_plot` | 原始 Nyquist / Bode 绘图数据 |
+| `raw_plot` | 原始 Nyquist 绘图数据：Z′ 与 −Z″ |
 | `fit_overlay` | 实测数据与拟合曲线 |
 | `rs_rct` | 逐谱图的主要阻抗参数摘要，双弧结果含 `Rsei` |
 | `fit_report` | 单谱图的参数、统计量和诊断；需要已有拟合与质量结果 |
@@ -92,7 +92,7 @@ CC 曲线页独立于阻抗拟合，读取 CP（Chronopotentiometry）和 ISTEP�
 
 样品标识取 `_CC_` 之前最后一个下划线后的部分，例如 `S01`。不同样品应使用不同标识，避免被合并为同一组。
 
-同目录中的 EIS、静置记录和没有完整数据点的 ISTEP 文件不进入曲线；已识别的 CC 文件若解析失败，会停止该次加载并显示错误。导出 Excel 时包含 `cc_curve` 与 `cc_segments`，TXT 则生成曲线和分段汇总两个文件。
+同目录中的 EIS、静置记录和没有完整数据点的 ISTEP 文件不进入曲线；已识别的 CC 文件若解析失败，会停止该次加载并显示错误。ISTEP 当前按每点 1 秒建立时间轴，不能直接据此处理任意采样间隔。导出 Excel 时包含 `cc_curve` 与 `cc_segments`，TXT 则生成曲线和分段汇总两个文件。
 
 ## 启动与排错
 
@@ -107,3 +107,14 @@ CC 曲线页独立于阻抗拟合，读取 CP（Chronopotentiometry）和 ISTEP�
 | CC 文件夹加载失败 | 检查文件名、类型及数据完整性，按页面显示的错误定位文件 |
 
 若使用已有 Windows 分发包，解压后运行 `EISMaster.exe`，保留同目录的 `_internal/` 等资源。DRT 仍需要本机 MATLAB；如果包内附带 DRTtools，选择其实际目录。源码安装与 Windows 分发包之外的平台运行情况，本指南不作实测声明。
+
+## 开发与检查
+
+完成首页的源码安装后，可在同一个虚拟环境内添加开发依赖并运行现有检查：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,advanced]"
+.\.venv\Scripts\python.exe -m pytest
+```
+
+`dev` 依赖来自 `pyproject.toml`，包含 pytest、Ruff 和 PyInstaller。源码可运行不等于分发包已验证；PyInstaller 配置还要求本地存在适配的 `matlab-DRTtools-local/` 资源，打包前需要准备该目录。
